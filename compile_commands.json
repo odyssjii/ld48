@@ -1,7 +1,7 @@
 [
     {
         "directory": "~/dev/ld48/code",
-        "command": "/usr/bin/clang -std=c11 -g ld48.c -o ld48 -Weverything -Wno-missing-braces -Wno-disabled-macro-expansion -Wno-c++98-compat -lsdl2 -lsdl2_ttf  -I /usr/local/Cellar/sdl2/2.0.9_1/include/SDL2/ -I /usr/local/Cellar/sdl2_ttf/2.0.15/include/SDL2/ -L /usr/local/Cellar/sdl2/2.0.9_1/lib/ -L /usr/local/Cellar/sdl2_ttf/2.0.15/lib",
+        "command": "/usr/bin/clang -std=c11 -g ld48.c -o build/ld48 -Weverything -Wno-missing-braces -Wno-disabled-macro-expansion -Wno-c++98-compat -lsdl2 -lsdl2_ttf  -I /usr/local/Cellar/sdl2/2.0.14_1/include/SDL2/ -I /usr/local/Cellar/sdl2_ttf/2.0.15/include/SDL2/ -L /usr/local/Cellar/sdl2/2.0.14_1/lib/ -L /usr/local/Cellar/sdl2_ttf/2.0.15/lib",
         "file": "ld48.c"
     },
 ]

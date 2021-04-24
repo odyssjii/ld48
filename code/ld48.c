@@ -4,6 +4,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <math.h>
 
 #include "imp_sdl.h"
 
@@ -28,10 +29,9 @@ typedef u32 b32;
 
 #include "colors.h"
 
-#define WIDTH 10
-#define HEIGHT 22
-#define VISIBLE_HEIGHT 20
-#define GRID_SIZE 10
+#define WINDOW_WIDTH 1280
+#define WINDOW_HEIGHT 720
+#define AUDIO_FREQ 48000
 
 #define ARRAY_COUNT(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -188,10 +188,10 @@ inline static struct v2
 normalize_v2i(struct v2i v)
 {
 	s32 sqrd_len = dot_v2i(v, v);
+
 	if (sqrd_len == 0)
-	{
 		return v2(0, 0);
-	}
+
 	f32 len = sqrtf(sqrd_len);
 	return v2(v.x / len, v.y / len);
 }
@@ -214,6 +214,9 @@ struct entity_part
 	struct v2 p;
 	struct v2 v;
 	struct v2 a;
+
+	u16 wave;
+	u16 wave2;
 };
 
 struct entity
@@ -254,20 +257,26 @@ enum text_align
 	TEXT_ALIGN_RIGHT
 };
 
-static inline s32
+
+
+
+
+
+
+static s32
 random_int(s32 min, s32 max)
 {
 	s32 range = max - min;
 	return min + rand() % range;
 }
 
-static inline s32
+static s32
 min(s32 x, s32 y)
 {
 	return x < y ? x : y;
 }
 
-static inline s32
+static s32
 max(s32 x, s32 y)
 {
 	return x > y ? x : y;
@@ -313,8 +322,7 @@ draw_string(SDL_Renderer *renderer,
 	rect.y = y;
 	rect.w = surface->w;
 	rect.h = surface->h;
-	switch (alignment)
-	{
+	switch (alignment) {
 	case TEXT_ALIGN_LEFT:
 		rect.x = x;
 		break;
@@ -345,8 +353,7 @@ render_cell(SDL_Renderer *renderer,
 	s32 x = (s32)(round(offset_x - (w / 2.0)));
 	s32 y = (s32)(round(offset_y - (h / 2.0)));
     
-	if (outline)
-	{
+	if (outline) {
 		draw_rect(renderer, x, y, w, h, base_color);
 		return;
 	}
@@ -358,19 +365,29 @@ render_cell(SDL_Renderer *renderer,
 		  w - edge * 2, h - edge * 2, base_color); 
 }
 
-static inline void
+static void
 fill_cell(SDL_Renderer *renderer,
           u8 value, s32 x, s32 y, s32 w, s32 h)
 {
 	render_cell(renderer, value, x, y, w, h, 0);
 }
 
-static inline void
+static void
 draw_cell(SDL_Renderer *renderer,
           u8 value, s32 x, s32 y, s32 w, s32 h)
 {
 	render_cell(renderer, value, x, y, w, h, 1);
 }
+
+
+
+
+
+
+
+
+
+
 
 static void
 update_game(struct game_state *game,
@@ -381,32 +398,32 @@ update_game(struct game_state *game,
     
 	root->a = v2(0, 0);
 	if (input->left)
-	{
 		root->a.x -= 1;
-	}
+
 	if (input->right)
-	{
 		root->a.x += 1;
-	}
+
 	if (input->up)
-	{
 		root->a.y -= 1;
-	}
+
 	if (input->down)
-	{
 		root->a.y += 1;
+
+	s32 mouse_x, mouse_y;
+	u32 mouse_buttons = SDL_GetMouseState(&mouse_x, &mouse_y);
+	if (mouse_buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) {
+		struct v2 m = v2(mouse_x, mouse_y);
+		struct v2 d = sub_v2(m, root->p);
+		root->a = normalize_v2(d);
 	}
-    
+
+	
 	/* entity->v = add_v2(entity->v, entity->a); */
 	/* entity->p = add_v2(entity->p, entity->v); */
     
-	for (u32 part_index = 0;
-	     part_index < entity->part_count;
-	     ++part_index)
-	{
+	for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
 		struct entity_part *part = entity->parts + part_index;
-		if (part_index != part->parent_index)
-		{
+		if (part_index != part->parent_index) {
 			struct entity_part *parent = entity->parts + part->parent_index;
         
 			struct v2 offset = sub_v2(part->p, parent->p);
@@ -417,6 +434,22 @@ update_game(struct game_state *game,
 		}
 		part->v = add_v2(part->v, part->a);
 		part->p = add_v2(part->p, part->v);
+
+		if (part->p.x < 0) {
+			part->p.x = 0;
+			part->v.x = -part->v.x * 0.4f;
+		} else if (part->p.x > WINDOW_WIDTH) {
+			part->p.x = WINDOW_WIDTH;
+			part->v.x = -part->v.x * 0.4f;
+		}
+
+		if (part->p.y < 0) {
+			part->p.y = 0;
+			part->v.y = -part->v.y * 0.4f;
+		} else if (part->p.y > WINDOW_HEIGHT) {
+			part->p.y = WINDOW_HEIGHT;
+			part->v.y = -part->v.y * 0.4f;
+		}
 	}
 }
 
@@ -425,17 +458,15 @@ render_game(const struct game_state *game,
             SDL_Renderer *renderer,
             TTF_Font *font)
 {
+	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+	SDL_RenderClear(renderer);
+
+	
 	struct color c = color(0xFF, 0xFF, 0xFF, 0xFF);
 
-	draw_string(renderer, font, "Simple spring physics", 5, 5, TEXT_ALIGN_LEFT, c);
+	draw_string(renderer, font, "LD48 - InvertedMinds", 5, 5, TEXT_ALIGN_LEFT, c);
 
-	// struct v2 ep = game->entity.p;
-
-	/* fill_cell(renderer, 1, (s32)ep.x, (s32)ep.y, 50, 50); */
-	for (u32 part_index = 0;
-	     part_index < game->entity.part_count;
-	     ++part_index)
-	{
+	for (u32 part_index = 0; part_index < game->entity.part_count; ++part_index) {
 		const struct entity_part *part = game->entity.parts + part_index;
 		const struct entity_part *parent = game->entity.parts + part->parent_index;
 
@@ -446,18 +477,18 @@ render_game(const struct game_state *game,
         
 		u32 chain_count = (u32)(part->length / 20);
 
-		for (u32 chain_index = 0;
-		     chain_index < chain_count;
-		     ++chain_index)
-		{
-			f32 r = (f32)(chain_index ) / chain_count;
+		for (u32 chain_index = 0; chain_index < chain_count; ++chain_index) {
+			f32 r = (f32)chain_index / (f32)chain_count;
 			struct v2 p = add_v2(ep, scale_v2(d, r));
 			fill_cell(renderer, 3, (s32)p.x, (s32)p.y, 12, 12);
 		}
 
 		fill_cell(renderer, (u8)part->color, (s32)pp.x, (s32)pp.y, (s32)part->size, (s32)part->size);
 	}
+
+	SDL_RenderPresent(renderer);
 }
+
 
 static struct entity_part *
 add_part(struct entity *entity)
@@ -471,6 +502,7 @@ add_part(struct entity *entity)
 
 static SDL_Window *window;
 static SDL_Renderer *renderer;
+static SDL_AudioDeviceID audio;
 static const char *font_name;
 static TTF_Font *font;
 static struct game_state *game;
@@ -478,12 +510,13 @@ static struct input_state input;
 static bool quit;
 
 static s32 window_w, window_h, renderer_w, renderer_h;
-static s32 default_scale = 1;
+static f32 default_scale = 1;
+
 
 static void
 update_and_render()
 {
-	game->time = SDL_GetTicks() / 1000.0f;
+	game->time = (f32)(SDL_GetTicks()) / 1000.0f;
         
 	SDL_Event e;
 	while (SDL_PollEvent(&e) != 0)
@@ -510,13 +543,77 @@ update_and_render()
 	input.ddown = (s8)(input.down - prev_input.down);
 	input.da = (s8)(input.a - prev_input.a);
         
-	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
-	SDL_RenderClear(renderer);
-        
+	SDL_LockAudioDevice(audio);
 	update_game(game, &input);
+	SDL_UnlockAudioDevice(audio);
+	
 	render_game(game, renderer, font);
+}
 
-	SDL_RenderPresent(renderer);
+static void
+mixaudio(void *unused, Uint8 *stream, int len)
+{
+	/* struct game_state *game = unused; */
+
+	u32 length = (u32)(len / 4);
+	f32 *s = (f32 *)(void *)stream;
+
+#if 0
+	{
+		struct entity_part *p = game->entity.parts;
+
+		f32 a = 1.0f;
+		
+		for (u32 i = 0; i < length; ++i) {
+			s[i] = fmodf(a * p->wave2 / AUDIO_FREQ, a) - a/2;
+			p->wave2 += 220;
+		}
+		return;
+	}
+#endif		
+
+	
+	for (u32 i = 0; i < length; ++i) {
+		s[i] = 0;
+		for (u32 j = 0; j < game->entity.part_count; ++j) {
+			struct entity_part *p = game->entity.parts + j;
+			
+			/* s[i] = (500 * p->wave2 / 44100) % 500; */
+			/* p->wave2 += 440; */
+			/* continue; */
+			
+			f32 w1 = sinf(p->wave * 2.0f * 3.14f / AUDIO_FREQ) * (p->size / 100.0f);
+			f32 w2 = 0;
+
+			f32 amp = (p->size / 100.0f);
+			if (!IS_F32_ZERO(amp))
+				w2 = fmodf(amp * p->wave2 / AUDIO_FREQ, amp) - amp / 2;
+
+			f32 w = w1 + w2;
+			if (w < -1.0f)
+				w = -1.0f;
+			else if (w > 1.0f)
+				w = 1.0f;
+			
+			s[i] += w;
+
+			p->wave += (u16)((roundf(len_v2(p->v) / p->size)) * 40);
+			p->wave2 += (u16)(roundf(len_v2(p->v)) * 40);
+		}
+	}
+	
+	
+	
+	
+	
+		
+	/* s16 *s = (s16 *)(void *)stream; */
+	/* u32 length = (u32)(len / 2); */
+	/* for (u32 i = 0; i < length; ++i) { */
+	/* 	s[i] = (s16)(14000 * sin(VV * 2 * 3.14 / 22050)); */
+		
+	/* 	VV += (f64)len_v2(game->entity.parts->v) * 10;  /\* + len_v2(game->entity.parts->a) * random_int(1, 4); *\/ */
+	/* } */
 }
 
 int
@@ -528,11 +625,12 @@ main()
 	if (TTF_Init() < 0)
 		return 2;
 
+	
 	window_w = 1280;
 	window_h = 720;
 	
 	window = SDL_CreateWindow(
-		"Tetris",
+		"LD48 -- InvertedMinds",
 		SDL_WINDOWPOS_UNDEFINED,
 		SDL_WINDOWPOS_UNDEFINED,
 		window_w,
@@ -546,7 +644,7 @@ main()
 
 	SDL_GetRendererOutputSize(renderer, &renderer_w, &renderer_h);
 
-	default_scale = renderer_w / window_w;
+	default_scale = (f32)renderer_w / (f32)window_w;
 	SDL_RenderSetScale(renderer, default_scale, default_scale);
 	
 	font_name = "novem___.ttf";
@@ -606,17 +704,36 @@ main()
 	game->entity.parts[9].size = 20;
 	game->entity.parts[9].color = 6;
 	game->entity.parts[9].parent_index = 8;
-
-	ZERO_STRUCT(input);
 	
+	ZERO_STRUCT(input);
 
+	SDL_AudioSpec fmt = { 0 };
+	fmt.freq = AUDIO_FREQ;
+	fmt.format = AUDIO_F32;
+	fmt.channels = 1;
+	fmt.samples = 1024;
+	fmt.callback = mixaudio;
+	fmt.userdata = game;
+
+	SDL_AudioSpec obt;
+	
+	if (SDL_OpenAudio(&fmt, &obt) < 0)
+		return 3;
+
+	audio = 1;
+	
+	SDL_PauseAudio(0);
+	
 #if defined(__EMSCRIPTEN__)
 	emscripten_set_main_loop(update_and_render, 0, 1);
 #else
 	while (!quit)
 		update_and_render();
 #endif
-        
+	
+	SDL_CloseAudio();
+
+	
 	TTF_CloseFont(font);
 	SDL_DestroyRenderer(renderer);
 	SDL_Quit();
