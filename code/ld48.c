@@ -225,6 +225,18 @@ struct entity
 	u32 part_count;
 };
 
+enum waveform_type {
+	SINE,
+	SAW
+};
+
+struct waveform
+{
+	u16 t;
+	u16 freq;
+	f32 amp;
+};
+
 struct game_state
 {
 	struct entity entity;
@@ -239,6 +251,12 @@ struct game_state
 	f32 tunnel_size;
 
 	u32 current_level;
+
+	struct waveform sine_waves[32];
+	u32 sine_wave_count;
+
+	struct waveform saw_waves[32];
+	u32 saw_wave_count;
 };
 
 struct input_state
@@ -365,14 +383,18 @@ draw_string_f(SDL_Renderer *renderer, TTF_Font *font, s32 x, s32 y, enum text_al
 
 
 static void
-render_cell(SDL_Renderer *renderer,
-            u8 value, s32 offset_x, s32 offset_y, s32 w, s32 h,
-            b32 outline)
+render_cell_(SDL_Renderer *renderer,
+	     u8 value, u8 alpha, s32 offset_x, s32 offset_y, s32 w, s32 h,
+	     b32 outline)
 {
 	struct color base_color = BASE_COLORS[value];
 	struct color light_color = LIGHT_COLORS[value];
 	struct color dark_color = DARK_COLORS[value];
-   
+
+	base_color.a = alpha;
+	light_color.a = alpha;
+	dark_color.a = alpha;
+	
 	s32 edge = 4; // GRID_SIZE / 8;
 
 	s32 x = (s32)(round(offset_x - (w / 2.0)));
@@ -384,7 +406,6 @@ render_cell(SDL_Renderer *renderer,
 	}
 
 	fill_rect(renderer, x, y, w, h, base_color);
-
 	
 	edge = (s32)((f32)w * fabsf((f32)offset_x - WINDOW_WIDTH / 2) / WINDOW_WIDTH);
 	
@@ -417,6 +438,14 @@ render_cell(SDL_Renderer *renderer,
 }
 
 static void
+render_cell(SDL_Renderer *renderer,
+	    u8 value, s32 offset_x, s32 offset_y, s32 w, s32 h,
+	    b32 outline)
+{
+	render_cell_(renderer, value, 0xFF, offset_x, offset_y, w, h, outline);
+}
+
+static void
 render_rect(SDL_Renderer *renderer, struct color color, s32 offset_x, s32 offset_y, s32 w, s32 h, b32 outline)
 {
 	s32 x = (s32)(round(offset_x - (w / 2.0)));
@@ -431,10 +460,17 @@ render_rect(SDL_Renderer *renderer, struct color color, s32 offset_x, s32 offset
 }
 
 static void
+fill_cell_(SDL_Renderer *renderer,
+	   u8 value, u8 alpha, s32 x, s32 y, s32 w, s32 h)
+{
+	render_cell_(renderer, value, alpha, x, y, w, h, 0);
+}
+
+static void
 fill_cell(SDL_Renderer *renderer,
           u8 value, s32 x, s32 y, s32 w, s32 h)
 {
-	render_cell(renderer, value, x, y, w, h, 0);
+	fill_cell_(renderer, value, 0xFF, x, y, w, h);
 }
 
 static void
@@ -445,16 +481,20 @@ draw_cell(SDL_Renderer *renderer,
 }
 
 static void
-special_fill_cell(SDL_Renderer *renderer,
-		  u8 value, s32 x, s32 y, s32 w, s32 h)
+special_fill_cell_(SDL_Renderer *renderer,
+		  u8 value, u8 alpha, s32 x, s32 y, s32 w, s32 h)
 {
-	if (w < 40) {
-		fill_cell(renderer, value, x, y, w, h);
+	if (w < 80) {
+		fill_cell_(renderer, value, alpha, x, y, w, h);
 		return;
-	} else if (w < 60) {
-		render_rect(renderer, BASE_COLORS[value], x, y, w, h, false);	
+	} else if (w < 120) {
+		struct color c = BASE_COLORS[value];
+		c.a = alpha;
+		render_rect(renderer, c, x, y, w, h, false);	
 	} else {
-		render_rect(renderer, DARK_COLORS[value], x, y, w, h, false);
+		struct color c = DARK_COLORS[value];
+		c.a = alpha;
+		render_rect(renderer, c, x, y, w, h, false);
 	}
 }
 
@@ -484,16 +524,13 @@ update_game(struct game_state *game,
 {
 	struct entity *entity = &game->entity;
 	struct entity_part *root = entity->parts;
-
-	f32 elapsed_t = game->time - game->level_begin_t;
-	f32 level_progress = elapsed_t / (game->level_end_t - game->level_begin_t);
 	
 	if (game->time < game->level_begin_t)
 		game->tunnel_size = WINDOW_WIDTH * (game->time - game->tunnel_begin_t) / (game->level_begin_t - game->tunnel_begin_t);
 	else
 		game->tunnel_size = WINDOW_WIDTH;
 	
-	if (level_progress > 1.0f)
+	if (game->time > game->level_end_t)
 		goto_level(game, (game->current_level + 1) % (ARRAY_COUNT(BASE_COLORS) - 1));
 	
 	root->a = v2(0, 0);
@@ -520,7 +557,7 @@ update_game(struct game_state *game,
 	
 	/* entity->v = add_v2(entity->v, entity->a); */
 	/* entity->p = add_v2(entity->p, entity->v); */
-    
+
 	for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
 		struct entity_part *part = entity->parts + part_index;
 		if (part_index != part->parent_index) {
@@ -551,6 +588,26 @@ update_game(struct game_state *game,
 			part->v.y = -part->v.y * 0.4f;
 		}
 	}
+
+	SDL_LockAudioDevice(1);
+	u32 wave_index = 0;
+	for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
+		struct entity_part *part = entity->parts + part_index;
+		
+		struct waveform *sine = game->sine_waves + wave_index;
+		struct waveform *saw = game->saw_waves + wave_index;
+
+		sine->amp = part->size / 1000.0f;
+		sine->freq = (u16)((roundf(len_v2(part->v) / part->size)) * 40);
+
+		saw->amp = part->size / 1000.0f;
+		saw->freq = (u16)(roundf(len_v2(part->v)) * 40);
+		
+		++wave_index;
+	}
+	game->sine_wave_count = wave_index;
+	game->saw_wave_count = wave_index;
+	SDL_UnlockAudioDevice(1);
 }
 
 static void
@@ -566,30 +623,36 @@ render_game(const struct game_state *game,
 
 	f32 elapsed_t = game->time - game->level_begin_t;
 	f32 level_progress = elapsed_t / (game->level_end_t - game->level_begin_t);
+	if (level_progress < 0)
+		level_progress = 0;
 	
 	struct v2 o = v2(WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2);
 	f32 len_o = len_v2(o) + 100;
-	
+
+	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 	{
-		f32 r = len_o * level_progress * level_progress;
+		f32 initial_r = len_o * level_progress * level_progress;
+		f32 r = initial_r;
 		f32 a = 0.25f * game->time;
 		while (r < game->tunnel_size) {
 			struct v2 p = add_v2(o, v2(r * cosf(a), r * sinf(a)));
 
-			/* f32 crr = (r / len_o); */
-			/* if (crr > 1.0f) crr = 1.0f; */
-			/* u8 c = (u8)(crr * ARRAY_COUNT(BASE_COLORS)); */
-			/* if (c == ARRAY_COUNT(BASE_COLORS)) */
-			/* 	c = 0; */
-
-			/* fill_cell(renderer, 6, (s32)p.x, (s32)p.y, (s32)(r / 10.0f), (s32)(r / 10.0f)); */
-			special_fill_cell(renderer, (u8)(game->current_level + 1), (s32)p.x, (s32)p.y, (s32)(r / 10.0f), (s32)(r / 10.0f));
-			r += 0.25f;
-			a += 0.25f;
+			u8 max_alpha = (u8)(0xE0 * sqrtf(r / len_o));
+			u8 alpha = max_alpha;
+			if (game->time < game->level_begin_t) {
+				f32 tunnel_d = game->level_begin_t - game->tunnel_begin_t;
+				f32 fade_progress = (game->time - game->tunnel_begin_t) / tunnel_d;
+				alpha = (u8)(max_alpha * fade_progress);
+			}
+			
+			special_fill_cell_(renderer, (u8)(game->current_level + 1), alpha, (s32)p.x, (s32)p.y, (s32)(r / 5.0f), (s32)(r / 5.0f));
+			/* r += 0.5f; */
+			r += 0.25f + sqrtf(r - initial_r) * 0.01f;
+			a += sqrtf(r - initial_r) * 0.1f;
 		}
 	}
 
-	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+	/* SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); */
 	for (u32 part_index = 0; part_index < game->entity.part_count; ++part_index) {
 		const struct entity_part *part = game->entity.parts + part_index;
 		const struct entity_part *parent = game->entity.parts + part->parent_index;
@@ -612,8 +675,16 @@ render_game(const struct game_state *game,
 
 		struct v2 offset = scale_v2(normalize_v2(from_c), 30);
 		struct v2 shadow = add_v2(pp, offset);
+
+		u8 max_alpha = (u8)(0xE0 * sqrtf(dist_to_center / len_o));
+		u8 alpha = max_alpha;
+		if (game->time < game->level_begin_t) {
+			f32 tunnel_d = game->level_begin_t - game->tunnel_begin_t;
+			f32 fade_progress = (game->time - game->tunnel_begin_t) / tunnel_d;
+			alpha = (u8)(max_alpha * fade_progress);
+		}
 		
-		struct color c = color(0x00, 0x00, 0x00, 0x80);
+		struct color c = color(0x00, 0x00, 0x00, alpha);
 		render_rect(renderer, c, (s32)shadow.x, (s32)shadow.y, (s32)(part->size * scale), (s32)(part->size * scale), false);
 	}
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
@@ -650,14 +721,21 @@ render_game(const struct game_state *game,
 		f32 fade_out_start_t = game->tunnel_begin_t - fade_out_d;
 		f32 fade_out_end_t = game->tunnel_begin_t;
 
-		u8 alpha = 0;
+		f32 alpha = 0xFF;
 		if (game->time >= fade_in_start_t && game->time <= fade_in_end_t)
-			alpha = (u8)(0xFF * (game->time - game->last_level_end_t) / fade_in_d);
+			alpha = (0xFF * (game->time - game->last_level_end_t) / fade_in_d);
 		if (game->time >= fade_out_start_t && game->time <= fade_out_end_t)
-			alpha = (u8)(0xFF * (1 - (game->time - fade_out_start_t) / fade_out_d));
-		
-		struct color c = color(0xFF, 0xFF, 0xFF, alpha);
-		draw_string_f(renderer, font, WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 9, TEXT_ALIGN_CENTER, c, "LEVEL %u", game->current_level + 1);
+			alpha = (0xFF * (1 - (game->time - fade_out_start_t) / fade_out_d));
+
+		if (alpha > 0xFF)
+			alpha = 0xFF;
+		else if (alpha < 0)
+			alpha = 0;
+
+		if (alpha > 1) {
+			struct color c = color(0xFF, 0xFF, 0xFF, (u8)alpha);
+			draw_string_f(renderer, font, WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 9, TEXT_ALIGN_CENTER, c, "LEVEL %u", game->current_level + 1);
+		}
 	}
 	
 	
@@ -716,10 +794,7 @@ update_and_render()
 	input.ddown = (s8)(input.down - prev_input.down);
 	input.da = (s8)(input.a - prev_input.a);
         
-	SDL_LockAudioDevice(audio);
 	update_game(game, &input);
-	SDL_UnlockAudioDevice(audio);
-	
 	render_game(game, renderer, font);
 }
 
@@ -731,30 +806,39 @@ mixaudio(void *unused, Uint8 *stream, int len)
 	u32 length = (u32)(len / 4);
 	f32 *s = (f32 *)(void *)stream;
 
-#if 0
-	{
-		struct entity_part *p = game->entity.parts;
-
-		f32 a = 1.0f;
-		
-		for (u32 i = 0; i < length; ++i) {
-			s[i] = fmodf(a * p->wave2 / AUDIO_FREQ, a) - a/2;
-			p->wave2 += 220;
+	for (u32 i = 0; i < length; ++i) {
+		f32 mix = 0;
+		for (u32 wave_index = 0; wave_index < game->sine_wave_count; ++wave_index) {
+			struct waveform *wave = game->sine_waves + wave_index;
+			f32 w = sinf(wave->t * 2.0f * 3.14f / AUDIO_FREQ) * wave->amp;
+			mix += w;
+			wave->t += wave->freq;
 		}
-		return;
-	}
-#endif		
 
-	
+		for (u32 wave_index = 0; wave_index < game->saw_wave_count; ++wave_index) {
+			struct waveform *wave = game->saw_waves + wave_index;
+			f32 w = 0;
+			if (!IS_F32_ZERO(wave->amp))
+				w = fmodf(wave->amp * wave->t / AUDIO_FREQ, wave->amp) - wave->amp / 2;
+			
+			mix += w;
+			wave->t += wave->freq;
+		}
+		
+		if (mix < -1.0f)
+			mix = -1.0f;
+		else if (mix > 1.0f)
+			mix = 1.0f;
+
+		s[i] = mix;
+	}
+
+#if 0
 	for (u32 i = 0; i < length; ++i) {
 		s[i] = 0;
 		for (u32 j = 0; j < game->entity.part_count; ++j) {
 			struct entity_part *p = game->entity.parts + j;
-			
-			/* s[i] = (500 * p->wave2 / 44100) % 500; */
-			/* p->wave2 += 440; */
-			/* continue; */
-			
+						
 			f32 w1 = sinf(p->wave * 2.0f * 3.14f / AUDIO_FREQ) * (p->size / 1000.0f);
 			f32 w2 = 0;
 
@@ -774,19 +858,7 @@ mixaudio(void *unused, Uint8 *stream, int len)
 			p->wave2 += (u16)(roundf(len_v2(p->v)) * 40);
 		}
 	}
-	
-	
-	
-	
-	
-		
-	/* s16 *s = (s16 *)(void *)stream; */
-	/* u32 length = (u32)(len / 2); */
-	/* for (u32 i = 0; i < length; ++i) { */
-	/* 	s[i] = (s16)(14000 * sin(VV * 2 * 3.14 / 22050)); */
-		
-	/* 	VV += (f64)len_v2(game->entity.parts->v) * 10;  /\* + len_v2(game->entity.parts->a) * random_int(1, 4); *\/ */
-	/* } */
+#endif
 }
 
 int
@@ -807,7 +879,7 @@ main()
 		SDL_WINDOWPOS_UNDEFINED,
 		window_w,
 		window_h,
-		SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
+		SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
 	
 	renderer = SDL_CreateRenderer(
 		window,
@@ -816,8 +888,10 @@ main()
 
 	SDL_GetRendererOutputSize(renderer, &renderer_w, &renderer_h);
 
+	printf("Render Size: %u, %u\n", renderer_w, renderer_h);
+	
 	default_scale = (f32)renderer_w / (f32)window_w;
-	SDL_RenderSetScale(renderer, default_scale, default_scale);
+	/* SDL_RenderSetScale(renderer, default_scale, default_scale); */
 	
 	font_name = "novem___.ttf";
 	font = TTF_OpenFont(font_name, 24);
