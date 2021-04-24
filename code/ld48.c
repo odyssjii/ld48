@@ -211,12 +211,10 @@ struct entity_part
 	u16 size;
 	u16 color;
 	u16 parent_index;
+	f32 weight;
 	struct v2 p;
 	struct v2 v;
 	struct v2 a;
-
-	u16 wave;
-	u16 wave2;
 };
 
 struct entity
@@ -694,18 +692,29 @@ update_game(struct game_state *game,
 	struct entity *player = &game->entities[0];
 	struct entity_part *root = player->parts;
 	
-	root->a = v2(0, 0);
+	
+	/* entity->v = add_v2(entity->v, entity->a); */
+	/* entity->p = add_v2(entity->p, entity->v); */
+
+	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
+		struct entity *entity = game->entities + entity_index;
+		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
+			struct entity_part *part = entity->parts + part_index;
+			part->a = v2(0, 0);
+		}
+	}
+
 	if (input->left)
-		root->a.x -= 1;
+		root->a.x -= 2;
 
 	if (input->right)
-		root->a.x += 1;
+		root->a.x += 2;
 
 	if (input->up)
-		root->a.y -= 1;
+		root->a.y -= 2;
 
 	if (input->down)
-		root->a.y += 1;
+		root->a.y += 2;
 
 	s32 mouse_x, mouse_y;
 	u32 mouse_buttons = SDL_GetMouseState(&mouse_x, &mouse_y);
@@ -714,9 +723,8 @@ update_game(struct game_state *game,
 		struct v2 d = sub_v2(m, root->p);
 		root->a = normalize_v2(d);
 	}
+
 	
-	/* entity->v = add_v2(entity->v, entity->a); */
-	/* entity->p = add_v2(entity->p, entity->v); */
 
 	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
 		struct entity *entity = game->entities + entity_index;
@@ -728,14 +736,34 @@ update_game(struct game_state *game,
 				struct v2 offset = sub_v2(part->p, parent->p);
 				struct v2 ideal = add_v2(parent->p, scale_v2(normalize_v2(offset), part->length));
 				struct v2 d = sub_v2(ideal, part->p);
-        
-				part->a = sub_v2(scale_v2(d, 0.1f), scale_v2(part->v, 0.1f));
+
+				f32 relative_weigth = (f32)part->weight / (f32)parent->weight;
+				
+				part->a = sub_v2(scale_v2(d, 0.1f / relative_weigth), scale_v2(part->v, 0.1f));
+				parent->a = add_v2(parent->a, scale_v2(d, -0.1f * relative_weigth));
 			}
+		}
+	}
+	
+	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
+		struct entity *entity = game->entities + entity_index;
+		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
+			struct entity_part *part = entity->parts + part_index;
+			/* if (part_index != part->parent_index) { */
+			/* 	struct entity_part *parent = entity->parts + part->parent_index; */
+        
+			/* 	struct v2 offset = sub_v2(part->p, parent->p); */
+			/* 	struct v2 ideal = add_v2(parent->p, scale_v2(normalize_v2(offset), part->length)); */
+			/* 	struct v2 d = sub_v2(ideal, part->p); */
+        
+			/* 	part->a = sub_v2(scale_v2(d, 0.1f), scale_v2(part->v, 0.1f)); */
+			/* 	parent->a = add_v2(parent->a, scale_v2(d, -0.1f)); */
+			/* } */
 			struct v2 new_v = add_v2(part->v, part->a);
 			if (len_v2(new_v) > 10)
 				new_v = scale_v2(normalize_v2(new_v), 10);
 			
-			new_v = sub_v2(new_v, scale_v2(new_v, part->size / 500.f));
+			/* new_v = sub_v2(new_v, scale_v2(new_v, part->size / 500.f)); */
 
 			struct v2 new_p = add_v2(part->p, new_v);
 			
@@ -751,9 +779,13 @@ update_game(struct game_state *game,
 				for (u32 other_part_index = 0; other_part_index < other->part_count; ++other_part_index) {
 					struct entity_part *op = other->parts + other_part_index;
 					if (test_collision_against_box(op, part, part->p, &new_p, &new_v)) {
-						struct v2 slam = part->v;
+						f32 relative_weight = part->weight / op->weight;
+						f32 impact = len_v2(part->v);
+						struct v2 d = normalize_v2(sub_v2(op->p, part->p));
+						struct v2 slam = scale_v2(d, impact * relative_weight);
+						struct v2 rebound = scale_v2(d, -impact / relative_weight);
 						op->v = add_v2(op->v, slam);
-						
+						new_v = add_v2(new_v, rebound);
 					}
 				}
 			}
@@ -764,17 +796,21 @@ update_game(struct game_state *game,
 			if (part->p.x < 0) {
 				part->p.x = 0;
 				part->v.x = -part->v.x * 0.4f;
+				part->a.x = 0;
 			} else if (part->p.x > WINDOW_WIDTH) {
 				part->p.x = WINDOW_WIDTH;
 				part->v.x = -part->v.x * 0.4f;
+				part->a.x = 0;
 			}
 
 			if (part->p.y < 0) {
 				part->p.y = 0;
 				part->v.y = -part->v.y * 0.4f;
+				part->a.y = 0;
 			} else if (part->p.y > WINDOW_HEIGHT) {
 				part->p.y = WINDOW_HEIGHT;
 				part->v.y = -part->v.y * 0.4f;
+				part->a.y = 0;
 			}
 		}
 	}
@@ -903,7 +939,7 @@ render_game(const struct game_state *game,
 	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
 		const struct entity *entity = game->entities + entity_index;
 		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
-			const struct entity_part *part = entity->parts + part_index;
+			const struct entity_part *part = entity->parts + (entity->part_count - part_index - 1);
 			const struct entity_part *parent = entity->parts + part->parent_index;
 
 			struct v2 ep = parent->p;
@@ -1188,24 +1224,31 @@ main()
 		entity->parts[0].color = 2;
 		entity->parts[0].p = v2(300, 300);
 	}
-
 	
 	{
 		struct entity *entity = game->entities + (game->entity_count++);
-		entity->part_count = 8;
+		entity->part_count = 16;
 		entity->parts[0].length = 0;
-		entity->parts[0].size = 10;
-		entity->parts[0].color = 3;
-		entity->parts[0].p = v2(600, 600);
+		entity->parts[0].size = 40;
+		entity->parts[0].color = 4;
+		entity->parts[0].p = v2(500, 500);
 
-		for (u32 i = 1; i < 8; ++i) {
-			entity->parts[i].length = 50;
-			entity->parts[i].size = 10;
-			entity->parts[i].color = 3;
+		for (u32 i = 1; i < 16; ++i) {
+			entity->parts[i].length = 25;
+			entity->parts[i].size = (u16)(40 - i);
+			entity->parts[i].color = 4;
+			entity->parts[i].p = add_v2(entity->parts[i - 1].p, v2(25, 0));
 			entity->parts[i].parent_index = (u16)(i - 1);
 		}
 	}
 
+	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
+		struct entity *entity = game->entities + entity_index;
+		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
+			struct entity_part *part = entity->parts + part_index;
+			part->weight = (f32)(part->size * part->size);
+		}
+	}
 	
 	ZERO_STRUCT(input);
 
