@@ -221,9 +221,6 @@ struct entity_part
 
 struct entity
 {
-	/* struct v2 p; */
-	/* struct v2 v; */
-	/* struct v2 a; */
 	struct entity_part parts[20];
 	u32 part_count;
 };
@@ -232,6 +229,16 @@ struct game_state
 {
 	struct entity entity;
 	f32 time;
+
+	f32 last_level_end_t;
+	f32 tunnel_begin_t;
+	
+	f32 level_begin_t;
+	f32 level_end_t;
+
+	f32 tunnel_size;
+
+	u32 current_level;
 };
 
 struct input_state
@@ -256,10 +263,6 @@ enum text_align
 	TEXT_ALIGN_CENTER,
 	TEXT_ALIGN_RIGHT
 };
-
-
-
-
 
 
 
@@ -340,6 +343,28 @@ draw_string(SDL_Renderer *renderer,
 }
 
 static void
+draw_string_f(SDL_Renderer *renderer, TTF_Font *font, s32 x, s32 y, enum text_align alignment, struct color color, const char *format, ...)
+{
+	char buffer[4096];
+	
+	va_list args;
+	va_start(args, format);
+	#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#endif
+	vsnprintf(buffer, ARRAY_COUNT(buffer), format, args);
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
+	draw_string(renderer, font, buffer, x, y, alignment, color);
+	
+	va_end(args);
+}
+
+
+static void
 render_cell(SDL_Renderer *renderer,
             u8 value, s32 offset_x, s32 offset_y, s32 w, s32 h,
             b32 outline)
@@ -357,12 +382,52 @@ render_cell(SDL_Renderer *renderer,
 		draw_rect(renderer, x, y, w, h, base_color);
 		return;
 	}
-    
+
+	fill_rect(renderer, x, y, w, h, base_color);
+
+	
+	edge = (s32)((f32)w * fabsf((f32)offset_x - WINDOW_WIDTH / 2) / WINDOW_WIDTH);
+	
+	if (offset_x > (WINDOW_WIDTH / 2)) {
+		fill_rect(renderer, x, y, edge, h, light_color);
+		fill_rect(renderer, x + w - edge, y, edge, h, dark_color);
+	} else {
+		fill_rect(renderer, x, y, edge, h, dark_color);
+		fill_rect(renderer, x + w - edge, y, edge, h, light_color);
+	}
+
+	edge = (s32)((f32)h * fabsf((f32)offset_y - WINDOW_HEIGHT / 2) / WINDOW_HEIGHT);
+		
+	if (offset_y > (WINDOW_HEIGHT / 2)) {
+		fill_rect(renderer, x, y, w, edge, light_color);
+		fill_rect(renderer, x, y + h - edge, w, edge, dark_color);
+	} else {
+		fill_rect(renderer, x, y, w, edge, dark_color);
+		fill_rect(renderer, x, y + h - edge, w, edge, light_color);
+	}
+
+	
+#if 0	
 	fill_rect(renderer, x, y, w, h, dark_color);
 	fill_rect(renderer, x + edge, y,
 		  w - edge, h - edge, light_color);
 	fill_rect(renderer, x + edge, y + edge,
-		  w - edge * 2, h - edge * 2, base_color); 
+		  w - edge * 2, h - edge * 2, base_color);
+#endif
+}
+
+static void
+render_rect(SDL_Renderer *renderer, struct color color, s32 offset_x, s32 offset_y, s32 w, s32 h, b32 outline)
+{
+	s32 x = (s32)(round(offset_x - (w / 2.0)));
+	s32 y = (s32)(round(offset_y - (h / 2.0)));
+    
+	if (outline) {
+		draw_rect(renderer, x, y, w, h, color);
+		return;
+	}
+    
+	fill_rect(renderer, x, y, w, h, color); 
 }
 
 static void
@@ -379,9 +444,19 @@ draw_cell(SDL_Renderer *renderer,
 	render_cell(renderer, value, x, y, w, h, 1);
 }
 
-
-
-
+static void
+special_fill_cell(SDL_Renderer *renderer,
+		  u8 value, s32 x, s32 y, s32 w, s32 h)
+{
+	if (w < 40) {
+		fill_cell(renderer, value, x, y, w, h);
+		return;
+	} else if (w < 60) {
+		render_rect(renderer, BASE_COLORS[value], x, y, w, h, false);	
+	} else {
+		render_rect(renderer, DARK_COLORS[value], x, y, w, h, false);
+	}
+}
 
 
 
@@ -390,12 +465,37 @@ draw_cell(SDL_Renderer *renderer,
 
 
 static void
+goto_level(struct game_state *game, u32 level)
+{
+	game->current_level = level;
+	game->last_level_end_t = game->level_end_t;
+
+	game->tunnel_begin_t = game->level_end_t + 5;
+	game->level_begin_t = game->tunnel_begin_t + 10;
+	game->level_end_t = game->level_begin_t + 60;
+		
+	game->tunnel_size = 0;
+}
+
+
+static void
 update_game(struct game_state *game,
             const struct input_state *input)
 {
 	struct entity *entity = &game->entity;
 	struct entity_part *root = entity->parts;
-    
+
+	f32 elapsed_t = game->time - game->level_begin_t;
+	f32 level_progress = elapsed_t / (game->level_end_t - game->level_begin_t);
+	
+	if (game->time < game->level_begin_t)
+		game->tunnel_size = WINDOW_WIDTH * (game->time - game->tunnel_begin_t) / (game->level_begin_t - game->tunnel_begin_t);
+	else
+		game->tunnel_size = WINDOW_WIDTH;
+	
+	if (level_progress > 1.0f)
+		goto_level(game, (game->current_level + 1) % (ARRAY_COUNT(BASE_COLORS) - 1));
+	
 	root->a = v2(0, 0);
 	if (input->left)
 		root->a.x -= 1;
@@ -462,10 +562,62 @@ render_game(const struct game_state *game,
 	SDL_RenderClear(renderer);
 
 	
-	struct color c = color(0xFF, 0xFF, 0xFF, 0xFF);
+	struct color white = color(0xFF, 0xFF, 0xFF, 0xFF);
 
-	draw_string(renderer, font, "LD48 - InvertedMinds", 5, 5, TEXT_ALIGN_LEFT, c);
+	f32 elapsed_t = game->time - game->level_begin_t;
+	f32 level_progress = elapsed_t / (game->level_end_t - game->level_begin_t);
+	
+	struct v2 o = v2(WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2);
+	f32 len_o = len_v2(o) + 100;
+	
+	{
+		f32 r = len_o * level_progress * level_progress;
+		f32 a = 0.25f * game->time;
+		while (r < game->tunnel_size) {
+			struct v2 p = add_v2(o, v2(r * cosf(a), r * sinf(a)));
 
+			/* f32 crr = (r / len_o); */
+			/* if (crr > 1.0f) crr = 1.0f; */
+			/* u8 c = (u8)(crr * ARRAY_COUNT(BASE_COLORS)); */
+			/* if (c == ARRAY_COUNT(BASE_COLORS)) */
+			/* 	c = 0; */
+
+			/* fill_cell(renderer, 6, (s32)p.x, (s32)p.y, (s32)(r / 10.0f), (s32)(r / 10.0f)); */
+			special_fill_cell(renderer, (u8)(game->current_level + 1), (s32)p.x, (s32)p.y, (s32)(r / 10.0f), (s32)(r / 10.0f));
+			r += 0.25f;
+			a += 0.25f;
+		}
+	}
+
+	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+	for (u32 part_index = 0; part_index < game->entity.part_count; ++part_index) {
+		const struct entity_part *part = game->entity.parts + part_index;
+		const struct entity_part *parent = game->entity.parts + part->parent_index;
+
+		struct v2 ep = parent->p;
+		struct v2 pp = part->p;
+
+		struct v2 d = sub_v2(pp, ep);
+        
+		/* u32 chain_count = (u32)(part->length / 20); */
+		/* for (u32 chain_index = 0; chain_index < chain_count; ++chain_index) { */
+		/* 	f32 r = (f32)chain_index / (f32)chain_count; */
+		/* 	struct v2 p = add_v2(ep, scale_v2(d, r)); */
+		/* 	fill_cell(renderer, 3, (s32)p.x, (s32)p.y, 12, 12); */
+		/* } */
+
+		struct v2 from_c = sub_v2(ep, o);
+		f32 dist_to_center = len_v2(from_c);
+		f32 scale = 2 * dist_to_center / len_o;
+
+		struct v2 offset = scale_v2(normalize_v2(from_c), 30);
+		struct v2 shadow = add_v2(pp, offset);
+		
+		struct color c = color(0x00, 0x00, 0x00, 0x80);
+		render_rect(renderer, c, (s32)shadow.x, (s32)shadow.y, (s32)(part->size * scale), (s32)(part->size * scale), false);
+	}
+	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+	
 	for (u32 part_index = 0; part_index < game->entity.part_count; ++part_index) {
 		const struct entity_part *part = game->entity.parts + part_index;
 		const struct entity_part *parent = game->entity.parts + part->parent_index;
@@ -486,6 +638,29 @@ render_game(const struct game_state *game,
 		fill_cell(renderer, (u8)part->color, (s32)pp.x, (s32)pp.y, (s32)part->size, (s32)part->size);
 	}
 
+	/* draw_string(renderer, font, "LD48 - InvertedMinds", 5, 5, TEXT_ALIGN_LEFT, white); */
+	draw_string_f(renderer, font, 5, 5, TEXT_ALIGN_LEFT, white, "T: %f", (f64)game->time);
+
+	if (game->time < game->tunnel_begin_t) {
+		f32 fade_in_d = 1;
+		f32 fade_in_start_t = game->last_level_end_t;
+		f32 fade_in_end_t = fade_in_start_t + fade_in_d;
+
+		f32 fade_out_d = 1;
+		f32 fade_out_start_t = game->tunnel_begin_t - fade_out_d;
+		f32 fade_out_end_t = game->tunnel_begin_t;
+
+		u8 alpha = 0;
+		if (game->time >= fade_in_start_t && game->time <= fade_in_end_t)
+			alpha = (u8)(0xFF * (game->time - game->last_level_end_t) / fade_in_d);
+		if (game->time >= fade_out_start_t && game->time <= fade_out_end_t)
+			alpha = (u8)(0xFF * (1 - (game->time - fade_out_start_t) / fade_out_d));
+		
+		struct color c = color(0xFF, 0xFF, 0xFF, alpha);
+		draw_string_f(renderer, font, WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 9, TEXT_ALIGN_CENTER, c, "LEVEL %u", game->current_level + 1);
+	}
+	
+	
 	SDL_RenderPresent(renderer);
 }
 
@@ -496,8 +671,6 @@ add_part(struct entity *entity)
 	assert(entity->part_count < ARRAY_COUNT(entity->parts));
 	return entity->parts + (entity->part_count++);
 }
-
-
 
 
 static SDL_Window *window;
@@ -582,10 +755,10 @@ mixaudio(void *unused, Uint8 *stream, int len)
 			/* p->wave2 += 440; */
 			/* continue; */
 			
-			f32 w1 = sinf(p->wave * 2.0f * 3.14f / AUDIO_FREQ) * (p->size / 100.0f);
+			f32 w1 = sinf(p->wave * 2.0f * 3.14f / AUDIO_FREQ) * (p->size / 1000.0f);
 			f32 w2 = 0;
 
-			f32 amp = (p->size / 100.0f);
+			f32 amp = (p->size / 1000.0f);
 			if (!IS_F32_ZERO(amp))
 				w2 = fmodf(amp * p->wave2 / AUDIO_FREQ, amp) - amp / 2;
 
@@ -624,10 +797,9 @@ main()
 
 	if (TTF_Init() < 0)
 		return 2;
-
 	
-	window_w = 1280;
-	window_h = 720;
+	window_w = WINDOW_WIDTH;
+	window_h = WINDOW_HEIGHT;
 	
 	window = SDL_CreateWindow(
 		"LD48 -- InvertedMinds",
@@ -652,6 +824,8 @@ main()
 
 	game = (struct game_state *)malloc(sizeof(struct game_state));
 	ZERO_STRUCT(*game);
+	/* game->level_end_t = -5; */
+	goto_level(game, 0);
 	
 	game->entity.part_count = 10;
 	game->entity.parts[0].length = 0;
