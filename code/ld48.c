@@ -239,7 +239,9 @@ struct waveform
 
 struct game_state
 {
-	struct entity entity;
+	struct entity entities[32];
+	u32 entity_count;
+	
 	f32 time;
 
 	f32 last_level_end_t;
@@ -252,6 +254,9 @@ struct game_state
 
 	u32 current_level;
 
+	f32 next_note_t;
+	u32 note;
+	
 	struct waveform sine_waves[32];
 	u32 sine_wave_count;
 
@@ -302,6 +307,161 @@ max(s32 x, s32 y)
 {
 	return x > y ? x : y;
 }
+
+
+static inline bool
+find_intersection_between_lines_(f32 P0_X,
+				 f32 P0_Y,
+				 f32 P1_X,
+				 f32 P1_Y,
+				 f32 P2_X,
+				 f32 P2_Y,
+				 f32 P3_X,
+				 f32 P3_Y,
+				 f32 *T1,
+				 f32 *T2)
+{
+    f32 D1_X = P1_X - P0_X;
+    f32 D1_Y = P1_Y - P0_Y;
+    f32 D2_X = P3_X - P2_X;
+    f32 D2_Y = P3_Y - P2_Y;
+
+    f32 Denominator = (-D2_X * D1_Y + D1_X * D2_Y);
+    
+    *T1 = (D2_X * (P0_Y - P2_Y) - D2_Y * (P0_X - P2_X)) / Denominator;
+    *T2 = (-D1_Y * (P0_X - P2_X) + D1_X * (P0_Y - P2_Y)) / Denominator;
+
+    if (*T1 >= 0 && *T1 <= 1 && *T2 >= 0 && *T2 <= 1)
+        return(true);
+
+    return(false);
+}
+
+__attribute__((always_inline))
+static inline bool
+find_intersection_between_lines(struct v2 P1,
+				struct v2 P2,
+				struct v2 P3,
+				struct v2 P4,
+				f32 *T1, f32 *T2)
+{
+	return find_intersection_between_lines_(P1.x, P1.y,
+						P2.x, P2.y,
+						P3.x, P3.y,
+						P4.x, P4.y,
+						T1, T2);
+}
+
+__attribute__((always_inline))
+static inline bool
+test_collision_against_line(struct v2 P,
+			    struct v2 W1,
+			    struct v2 W2,
+			    struct v2 Normal,
+			    struct v2 *NewP,
+			    struct v2 *NewV,
+			    f32 *T)
+{
+	struct v2 dP = sub_v2(*NewP, P);
+	struct v2 Tangent = v2(Normal.y, -Normal.x);
+
+	f32 MagnitudeAlongNormal = dot_v2(dP, Normal);
+	struct v2 MovementAlongNormal = scale_v2(Normal, MagnitudeAlongNormal);
+		
+	if (MagnitudeAlongNormal < 1)
+		MovementAlongNormal = normalize_v2(MovementAlongNormal);
+	
+	f32 T1, T2;
+	bool Collision = find_intersection_between_lines(P,
+							 *NewP,
+							 W1,
+							 W2,
+							 &T1,
+							 &T2);
+	if (Collision)
+	{
+		struct v2 VAlongTangent = scale_v2(Tangent, dot_v2(*NewV, Tangent));
+		struct v2 VAlongNormal = scale_v2(Normal, -0.1f * dot_v2(*NewV, Normal));
+
+		*NewP = add_v2(add_v2(P, scale_v2(dP, T1)), Normal); // + NewV;
+		*NewV = add_v2(VAlongTangent, VAlongNormal);
+		*T = T1;
+	}
+	else
+	{
+		Collision = find_intersection_between_lines(*NewP,
+							    sub_v2(*NewP, Normal),
+							    W1,
+							    W2,
+							    &T1,
+							    &T2);
+		if (Collision)
+		{
+			struct v2 VAlongTangent = scale_v2(Tangent, dot_v2(*NewV, Tangent));
+			struct v2 VAlongNormal = scale_v2(Normal, -0.1f * dot_v2(*NewV, Normal));
+
+			*NewP = add_v2(*NewP, scale_v2(Normal, (1.1f - T1)));
+			*NewV = add_v2(VAlongTangent, VAlongNormal);
+			*T = T1;
+		}
+	}
+	return(Collision);
+}
+
+__attribute__((always_inline))
+static inline bool
+test_collision_against_box(const struct entity_part *Obstacle,
+			   struct entity_part *Entity,
+			   struct v2 P,
+			   struct v2 *NewP,
+			   struct v2 *NewV)
+{
+    struct v2 MinkowskiSize = v2(Obstacle->size + Entity->size, Obstacle->size + Entity->size);
+
+    struct v2 Diff = sub_v2(P, Obstacle->p);
+    if (fabsf(Diff.x) > MinkowskiSize.x || fabsf(Diff.y) > MinkowskiSize.y)
+        return false;
+
+#if 0
+    struct v2 TopLeft = add_v2(Obstacle->p, scale_v2(v2(-MinkowskiSize.x, MinkowskiSize.y), 0.5f));
+    struct v2 TopRight = add_v2(Obstacle->p, scale_v2(MinkowskiSize, 0.5f));
+    struct v2 BottomRight = add_v2(Obstacle->p, scale_v2(v2(MinkowskiSize.x, -MinkowskiSize.y), 0.5f));
+    struct v2 BottomLeft = add_v2(Obstacle->p, scale_v2(MinkowskiSize, 0.5f));
+#else
+    struct v2 TopLeft = add_v2(Obstacle->p, scale_v2(v2(-MinkowskiSize.x, -MinkowskiSize.y), 0.5f));
+    struct v2 TopRight = add_v2(Obstacle->p, scale_v2(v2(MinkowskiSize.x, -MinkowskiSize.y), 0.5f));
+    struct v2 BottomRight = add_v2(Obstacle->p, scale_v2(v2(MinkowskiSize.x, MinkowskiSize.y), 0.5f));
+    struct v2 BottomLeft = add_v2(Obstacle->p, scale_v2(v2(-MinkowskiSize.x, MinkowskiSize.y), 0.5f));
+#endif    
+    // NOTE(Omid): Check if inside.
+    if (P.x > TopLeft.x &&
+        P.x < TopRight.x &&
+        P.y > TopLeft.y &&
+        P.y < BottomLeft.y)
+    {
+        f32 D1 = fabsf(P.y - TopLeft.y) + 0.1f;
+        f32 D2 = fabsf(P.y - BottomLeft.y) + 0.1f;
+        NewP->y -= D1 < D2 ? D1 : -D2;
+	return true;
+    }
+    
+    f32 T;
+    if (test_collision_against_line(P, TopLeft, TopRight, v2(0, -1), NewP, NewV, &T))
+	    return true;
+
+    if (test_collision_against_line(P, BottomLeft, BottomRight, v2(0, 1), NewP, NewV, &T))
+	    return true;
+
+    if (test_collision_against_line(P, TopLeft, BottomLeft, v2(-1, 0), NewP, NewV, &T))
+	    return true;
+
+    if (test_collision_against_line(P, TopRight, BottomRight, v2(1, 0), NewP, NewV, &T))
+	    return true;
+
+    return false;
+}
+
+
 
 static void
 fill_rect(SDL_Renderer *renderer, s32 x, s32 y, s32 width, s32 height, struct color color)
@@ -522,8 +682,6 @@ static void
 update_game(struct game_state *game,
             const struct input_state *input)
 {
-	struct entity *entity = &game->entity;
-	struct entity_part *root = entity->parts;
 	
 	if (game->time < game->level_begin_t)
 		game->tunnel_size = WINDOW_WIDTH * (game->time - game->tunnel_begin_t) / (game->level_begin_t - game->tunnel_begin_t);
@@ -532,6 +690,9 @@ update_game(struct game_state *game,
 	
 	if (game->time > game->level_end_t)
 		goto_level(game, (game->current_level + 1) % (ARRAY_COUNT(BASE_COLORS) - 1));
+
+	struct entity *player = &game->entities[0];
+	struct entity_part *root = player->parts;
 	
 	root->a = v2(0, 0);
 	if (input->left)
@@ -553,57 +714,104 @@ update_game(struct game_state *game,
 		struct v2 d = sub_v2(m, root->p);
 		root->a = normalize_v2(d);
 	}
-
 	
 	/* entity->v = add_v2(entity->v, entity->a); */
 	/* entity->p = add_v2(entity->p, entity->v); */
 
-	for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
-		struct entity_part *part = entity->parts + part_index;
-		if (part_index != part->parent_index) {
-			struct entity_part *parent = entity->parts + part->parent_index;
+	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
+		struct entity *entity = game->entities + entity_index;
+		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
+			struct entity_part *part = entity->parts + part_index;
+			if (part_index != part->parent_index) {
+				struct entity_part *parent = entity->parts + part->parent_index;
         
-			struct v2 offset = sub_v2(part->p, parent->p);
-			struct v2 ideal = add_v2(parent->p, scale_v2(normalize_v2(offset), part->length));
-			struct v2 d = sub_v2(ideal, part->p);
+				struct v2 offset = sub_v2(part->p, parent->p);
+				struct v2 ideal = add_v2(parent->p, scale_v2(normalize_v2(offset), part->length));
+				struct v2 d = sub_v2(ideal, part->p);
         
-			part->a = sub_v2(scale_v2(d, 0.1f), scale_v2(part->v, 0.1f));
-		}
-		part->v = add_v2(part->v, part->a);
-		part->p = add_v2(part->p, part->v);
+				part->a = sub_v2(scale_v2(d, 0.1f), scale_v2(part->v, 0.1f));
+			}
+			struct v2 new_v = add_v2(part->v, part->a);
+			if (len_v2(new_v) > 10)
+				new_v = scale_v2(normalize_v2(new_v), 10);
+			
+			new_v = sub_v2(new_v, scale_v2(new_v, part->size / 500.f));
 
-		if (part->p.x < 0) {
-			part->p.x = 0;
-			part->v.x = -part->v.x * 0.4f;
-		} else if (part->p.x > WINDOW_WIDTH) {
-			part->p.x = WINDOW_WIDTH;
-			part->v.x = -part->v.x * 0.4f;
-		}
+			struct v2 new_p = add_v2(part->p, new_v);
+			
+			/* part->v = add_v2(part->v, part->a); */
+			/* part->p = add_v2(part->p, part->v); */
 
-		if (part->p.y < 0) {
-			part->p.y = 0;
-			part->v.y = -part->v.y * 0.4f;
-		} else if (part->p.y > WINDOW_HEIGHT) {
-			part->p.y = WINDOW_HEIGHT;
-			part->v.y = -part->v.y * 0.4f;
+			for (u32 other_index = 0; other_index < game->entity_count; ++other_index) {
+				if (other_index == entity_index)
+					continue;
+
+				struct entity *other = game->entities + other_index;
+				
+				for (u32 other_part_index = 0; other_part_index < other->part_count; ++other_part_index) {
+					struct entity_part *op = other->parts + other_part_index;
+					if (test_collision_against_box(op, part, part->p, &new_p, &new_v)) {
+						struct v2 slam = part->v;
+						op->v = add_v2(op->v, slam);
+						
+					}
+				}
+			}
+
+			part->p = new_p;
+			part->v = new_v;
+		
+			if (part->p.x < 0) {
+				part->p.x = 0;
+				part->v.x = -part->v.x * 0.4f;
+			} else if (part->p.x > WINDOW_WIDTH) {
+				part->p.x = WINDOW_WIDTH;
+				part->v.x = -part->v.x * 0.4f;
+			}
+
+			if (part->p.y < 0) {
+				part->p.y = 0;
+				part->v.y = -part->v.y * 0.4f;
+			} else if (part->p.y > WINDOW_HEIGHT) {
+				part->p.y = WINDOW_HEIGHT;
+				part->v.y = -part->v.y * 0.4f;
+			}
 		}
 	}
 
+	if (game->time > game->next_note_t) {
+		game->next_note_t += 4;
+		if (game->note == 40)
+			game->note = 80;
+		else if (game->note == 80)
+			game->note = 60;
+		else
+			game->note = 40;
+	}
+	
 	SDL_LockAudioDevice(1);
 	u32 wave_index = 0;
-	for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
-		struct entity_part *part = entity->parts + part_index;
+	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
+		struct entity *entity = game->entities + entity_index;
+		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
+			struct entity_part *part = entity->parts + part_index;
 		
-		struct waveform *sine = game->sine_waves + wave_index;
-		struct waveform *saw = game->saw_waves + wave_index;
+			struct waveform *sine = game->sine_waves + wave_index;
+			struct waveform *saw = game->saw_waves + wave_index;
 
-		sine->amp = part->size / 1000.0f;
-		sine->freq = (u16)((roundf(len_v2(part->v) / part->size)) * 40);
+			sine->amp = sqrtf(len_v2(part->v)) / 400.0f;
+			if (sine->amp > 0.25f)
+				sine->amp = 0.25f;
+			sine->freq = (u16)((roundf(len_v2(part->v) * 10 / part->size)) * (f32)game->note);
 
-		saw->amp = part->size / 1000.0f;
-		saw->freq = (u16)(roundf(len_v2(part->v)) * 40);
+			saw->amp = sqrtf(len_v2(part->v)) / 400.0f; /* part->size / 1000.0f; */
+			if (saw->amp > 0.25f)
+				saw->amp = 0.25f;
+			
+			saw->freq = (u16)((roundf(len_v2(part->v) * 10 / part->size)) * 2 * (f32)game->note); /* (u16)(roundf(len_v2(part->v)) * 40); */
 		
-		++wave_index;
+			++wave_index;
+		}
 	}
 	game->sine_wave_count = wave_index;
 	game->saw_wave_count = wave_index;
@@ -653,60 +861,66 @@ render_game(const struct game_state *game,
 	}
 
 	/* SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); */
-	for (u32 part_index = 0; part_index < game->entity.part_count; ++part_index) {
-		const struct entity_part *part = game->entity.parts + part_index;
-		const struct entity_part *parent = game->entity.parts + part->parent_index;
+	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
+		const struct entity *entity = game->entities + entity_index;
+		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
+			const struct entity_part *part = entity->parts + part_index;
+			const struct entity_part *parent = entity->parts + part->parent_index;
 
-		struct v2 ep = parent->p;
-		struct v2 pp = part->p;
+			struct v2 ep = parent->p;
+			struct v2 pp = part->p;
 
-		struct v2 d = sub_v2(pp, ep);
+			struct v2 d = sub_v2(pp, ep);
         
-		/* u32 chain_count = (u32)(part->length / 20); */
-		/* for (u32 chain_index = 0; chain_index < chain_count; ++chain_index) { */
-		/* 	f32 r = (f32)chain_index / (f32)chain_count; */
-		/* 	struct v2 p = add_v2(ep, scale_v2(d, r)); */
-		/* 	fill_cell(renderer, 3, (s32)p.x, (s32)p.y, 12, 12); */
-		/* } */
+			/* u32 chain_count = (u32)(part->length / 20); */
+			/* for (u32 chain_index = 0; chain_index < chain_count; ++chain_index) { */
+			/* 	f32 r = (f32)chain_index / (f32)chain_count; */
+			/* 	struct v2 p = add_v2(ep, scale_v2(d, r)); */
+			/* 	fill_cell(renderer, 3, (s32)p.x, (s32)p.y, 12, 12); */
+			/* } */
 
-		struct v2 from_c = sub_v2(ep, o);
-		f32 dist_to_center = len_v2(from_c);
-		f32 scale = 2 * dist_to_center / len_o;
+			struct v2 from_c = sub_v2(ep, o);
+			f32 dist_to_center = len_v2(from_c);
+			f32 scale = 2 * dist_to_center / len_o;
 
-		struct v2 offset = scale_v2(normalize_v2(from_c), 30);
-		struct v2 shadow = add_v2(pp, offset);
+			struct v2 offset = scale_v2(normalize_v2(from_c), 30);
+			struct v2 shadow = add_v2(pp, offset);
 
-		u8 max_alpha = (u8)(0xE0 * sqrtf(dist_to_center / len_o));
-		u8 alpha = max_alpha;
-		if (game->time < game->level_begin_t) {
-			f32 tunnel_d = game->level_begin_t - game->tunnel_begin_t;
-			f32 fade_progress = (game->time - game->tunnel_begin_t) / tunnel_d;
-			alpha = (u8)(max_alpha * fade_progress);
-		}
+			u8 max_alpha = (u8)(0xE0 * sqrtf(dist_to_center / len_o));
+			u8 alpha = max_alpha;
+			if (game->time < game->level_begin_t) {
+				f32 tunnel_d = game->level_begin_t - game->tunnel_begin_t;
+				f32 fade_progress = (game->time - game->tunnel_begin_t) / tunnel_d;
+				alpha = (u8)(max_alpha * fade_progress);
+			}
 		
-		struct color c = color(0x00, 0x00, 0x00, alpha);
-		render_rect(renderer, c, (s32)shadow.x, (s32)shadow.y, (s32)(part->size * scale), (s32)(part->size * scale), false);
+			struct color c = color(0x00, 0x00, 0x00, alpha);
+			render_rect(renderer, c, (s32)shadow.x, (s32)shadow.y, (s32)(part->size * scale), (s32)(part->size * scale), false);
+		}
 	}
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-	
-	for (u32 part_index = 0; part_index < game->entity.part_count; ++part_index) {
-		const struct entity_part *part = game->entity.parts + part_index;
-		const struct entity_part *parent = game->entity.parts + part->parent_index;
 
-		struct v2 ep = parent->p;
-		struct v2 pp = part->p;
+	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
+		const struct entity *entity = game->entities + entity_index;
+		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
+			const struct entity_part *part = entity->parts + part_index;
+			const struct entity_part *parent = entity->parts + part->parent_index;
 
-		struct v2 d = sub_v2(pp, ep);
+			struct v2 ep = parent->p;
+			struct v2 pp = part->p;
+
+			struct v2 d = sub_v2(pp, ep);
         
-		u32 chain_count = (u32)(part->length / 20);
+			u32 chain_count = (u32)(part->length / 20);
 
-		for (u32 chain_index = 0; chain_index < chain_count; ++chain_index) {
-			f32 r = (f32)chain_index / (f32)chain_count;
-			struct v2 p = add_v2(ep, scale_v2(d, r));
-			fill_cell(renderer, 3, (s32)p.x, (s32)p.y, 12, 12);
+			for (u32 chain_index = 0; chain_index < chain_count; ++chain_index) {
+				f32 r = (f32)chain_index / (f32)chain_count;
+				struct v2 p = add_v2(ep, scale_v2(d, r));
+				fill_cell(renderer, 3, (s32)p.x, (s32)p.y, 12, 12);
+			}
+
+			fill_cell(renderer, (u8)part->color, (s32)pp.x, (s32)pp.y, (s32)part->size, (s32)part->size);
 		}
-
-		fill_cell(renderer, (u8)part->color, (s32)pp.x, (s32)pp.y, (s32)part->size, (s32)part->size);
 	}
 
 	/* draw_string(renderer, font, "LD48 - InvertedMinds", 5, 5, TEXT_ALIGN_LEFT, white); */
@@ -900,58 +1114,98 @@ main()
 	ZERO_STRUCT(*game);
 	/* game->level_end_t = -5; */
 	goto_level(game, 0);
+
+	{
+		struct entity *entity = game->entities + (game->entity_count++);
 	
-	game->entity.part_count = 10;
-	game->entity.parts[0].length = 0;
-	game->entity.parts[0].size = 50;
-	game->entity.parts[0].color = 1;
-	game->entity.parts[0].p = v2(100, 100);
+		entity->part_count = 10;
+		entity->parts[0].length = 0;
+		entity->parts[0].size = 50;
+		entity->parts[0].color = 1;
+		entity->parts[0].p = v2(100, 100);
     
-	game->entity.parts[1].length = 100;
-	game->entity.parts[1].size = 25;
-	game->entity.parts[1].color = 2;
-	game->entity.parts[1].p = v2(70, 70);
+		entity->parts[1].length = 100;
+		entity->parts[1].size = 25;
+		entity->parts[1].color = 2;
+		entity->parts[1].p = v2(70, 70);
 
-	game->entity.parts[2].length = 50;
-	game->entity.parts[2].size = 25;
-	game->entity.parts[2].color = 2;
-	game->entity.parts[2].p = v2(-40, 20);
+		entity->parts[2].length = 50;
+		entity->parts[2].size = 25;
+		entity->parts[2].color = 2;
+		entity->parts[2].p = v2(-40, 20);
 
-	game->entity.parts[3].length = 50;
-	game->entity.parts[3].size = 20;
-	game->entity.parts[3].color = 4;
-	game->entity.parts[3].parent_index = 2;
+		entity->parts[3].length = 50;
+		entity->parts[3].size = 20;
+		entity->parts[3].color = 4;
+		entity->parts[3].parent_index = 2;
 
-	game->entity.parts[4].length = 50;
-	game->entity.parts[4].size = 20;
-	game->entity.parts[4].color = 5;
-	game->entity.parts[4].parent_index = 3;
+		entity->parts[4].length = 50;
+		entity->parts[4].size = 20;
+		entity->parts[4].color = 5;
+		entity->parts[4].parent_index = 3;
 
-	game->entity.parts[5].length = 50;
-	game->entity.parts[5].size = 20;
-	game->entity.parts[5].color = 6;
-	game->entity.parts[5].parent_index = 4;
+		entity->parts[5].length = 50;
+		entity->parts[5].size = 20;
+		entity->parts[5].color = 6;
+		entity->parts[5].parent_index = 4;
     
 
-	game->entity.parts[6].length = 60;
-	game->entity.parts[6].size = 25;
-	game->entity.parts[6].color = 2;
-	game->entity.parts[6].p = v2(-40, 20);
+		entity->parts[6].length = 60;
+		entity->parts[6].size = 25;
+		entity->parts[6].color = 2;
+		entity->parts[6].p = v2(-40, 20);
 
-	game->entity.parts[7].length = 60;
-	game->entity.parts[7].size = 20;
-	game->entity.parts[7].color = 4;
-	game->entity.parts[7].parent_index = 6;
+		entity->parts[7].length = 60;
+		entity->parts[7].size = 20;
+		entity->parts[7].color = 4;
+		entity->parts[7].parent_index = 6;
 
-	game->entity.parts[8].length = 60;
-	game->entity.parts[8].size = 20;
-	game->entity.parts[8].color = 5;
-	game->entity.parts[8].parent_index = 7;
+		entity->parts[8].length = 60;
+		entity->parts[8].size = 20;
+		entity->parts[8].color = 5;
+		entity->parts[8].parent_index = 7;
 
-	game->entity.parts[9].length = 60;
-	game->entity.parts[9].size = 20;
-	game->entity.parts[9].color = 6;
-	game->entity.parts[9].parent_index = 8;
+		entity->parts[9].length = 60;
+		entity->parts[9].size = 20;
+		entity->parts[9].color = 6;
+		entity->parts[9].parent_index = 8;
+	}
+
+	{
+		struct entity *entity = game->entities + (game->entity_count++);
+		entity->part_count = 1;
+		entity->parts[0].length = 0;
+		entity->parts[0].size = 50;
+		entity->parts[0].color = 8;
+		entity->parts[0].p = v2(500, 500);
+	}
+
+	{
+		struct entity *entity = game->entities + (game->entity_count++);
+		entity->part_count = 1;
+		entity->parts[0].length = 0;
+		entity->parts[0].size = 25;
+		entity->parts[0].color = 2;
+		entity->parts[0].p = v2(300, 300);
+	}
+
+	
+	{
+		struct entity *entity = game->entities + (game->entity_count++);
+		entity->part_count = 8;
+		entity->parts[0].length = 0;
+		entity->parts[0].size = 10;
+		entity->parts[0].color = 3;
+		entity->parts[0].p = v2(600, 600);
+
+		for (u32 i = 1; i < 8; ++i) {
+			entity->parts[i].length = 50;
+			entity->parts[i].size = 10;
+			entity->parts[i].color = 3;
+			entity->parts[i].parent_index = (u16)(i - 1);
+		}
+	}
+
 	
 	ZERO_STRUCT(input);
 
