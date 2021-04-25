@@ -1,3 +1,21 @@
+/********************************************************************************
+* (C) Copyright 2021 Omid Ghavami Zeitooni. All Rights Reserved                 *
+********************************************************************************/
+
+
+
+/*
+  
+  Seed + Water => Food
+  
+
+  Worm[Seed, Seed] => Gem1
+  Word[Seed, Food] => Gem2
+  Word[Food, Food] => Gem3
+    
+ */
+
+
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -25,6 +43,7 @@ typedef double f64;
 
 typedef uintptr_t umm;
 
+typedef u8 b8;
 typedef u16 b16;
 typedef u32 b32;
 
@@ -35,10 +54,12 @@ typedef u32 b32;
 #define AUDIO_FREQ 48000
 #define FONT_SIZE 24
 #define SMALL_FONT_SIZE 16
-#define MAX_ENTITY_COUNT 32
+#define MAX_ENTITY_COUNT 128
 #define MAX_ENTITY_PART_COUNT 32
 
 #define ARRAY_COUNT(x) (sizeof(x) / sizeof((x)[0]))
+
+
 
 struct memory_arena
 {
@@ -219,8 +240,17 @@ struct entity_part {
 	u16 render_size;
 	u16 depth;
 	b16 disposed;
+	f32 stiffness;
 	f32 mass;
-	b32 suspended_for_frame;
+	u8 max_alpha;
+	b8 suspended_for_frame;
+	b8 internal_collisions;
+	u8 content;
+	u8 hydration;
+	u8 accept;
+	b16 passthrough;
+	u32 content_value;
+	f32 audio_gen;
 	struct v2 p;
 	struct v2 v;
 	struct v2 a;
@@ -229,22 +259,30 @@ struct entity_part {
 
 enum entity_type {
 	ENTITY_NONE,
-	ENTITY_PLAYER,
-	ENTITY_SEED,
-	ENTITY_WATER,
-	ENTITY_FOOD,
-	ENTITY_WORM
+	ENTITY_PLAYER      = 0x001,
+	ENTITY_FOOD        = 0x002,
+	ENTITY_SEED        = 0x004,
+	ENTITY_WATER       = 0x008,
+	ENTITY_SLIME       = 0x010,
+	ENTITY_WORM        = 0x020,
+	ENTITY_WATER_EATER = 0x040,
+	ENTITY_SOCKET      = 0x080,
+	ENTITY_GEM        = 0x100
 };
 
 struct entity {
 	u32 id;
 	u32 index;
+	u32 seed;
 	enum entity_type type;
-	u16 part_count;
-	b16 internal_collisions;	
+	u8 part_count;
+	b8 internal_collisions;
+	b8 disposed;
+	b8 suspended_for_frame;
 	struct entity_part parts[MAX_ENTITY_PART_COUNT];
-	b32 disposed;
-	b32 suspended_for_frame;
+
+	b16 fixed;
+	b16 passthrough;
 
 	struct v2 target;
 	f32 pull_of_target;
@@ -252,6 +290,7 @@ struct entity {
 	u32 target_entity_id;
 	b32 has_target;
 	f32 next_target_check_t;
+	f32 expiration_t;
 
 	f32 z;
 	f32 accum_z;
@@ -271,26 +310,49 @@ struct waveform {
 enum game_event_type {
 	GAME_EVENT_NONE,
 	GAME_EVENT_SEED_TOUCH_WATER,
-	GAME_EVENT_WORM_EAT_FOOD
+	GAME_EVENT_WORM_EAT_FOOD,
+	GAME_EVENT_WATER_EATER_EAT_WATER,
+	GAME_EVENT_GEM_TOUCH_SOCKET
 };
 
-struct seed_touch_water_event {
-	u32 seed_entity_index;
-	u32 water_entity_index;
-	u32 water_part_index;
-};
+/* struct seed_touch_water_event { */
+/* 	u32 seed_entity_index; */
+/* 	u32 water_entity_index; */
+/* 	u32 water_part_index; */
+/* }; */
 
-struct worm_eat_food_event {
-	u32 worm_entity_index;
-	u32 food_entity_index;
+/* struct worm_eat_food_event { */
+/* 	u32 worm_entity_index; */
+/* 	u32 food_entity_index; */
+/* }; */
+
+/* struct water_eater_eat_water_event { */
+/* 	u32 water_eater_entity_index; */
+/* 	u32 water_entity_index; */
+/* 	u32 water_part_index; */
+/* }; */
+
+struct generic_collision_event {
+	u32 e1;
+	u32 e2;
+	u32 p1;
+	u32 p2;
 };
 
 struct game_event {
 	enum game_event_type type;
 	union {
-		struct seed_touch_water_event seed_touch_water;
-		struct worm_eat_food_event worm_eat_food;
+		struct generic_collision_event seed_touch_water;
+		struct generic_collision_event worm_eat_food;
+		struct generic_collision_event water_eater_eat_water;
+		struct generic_collision_event gem_touch_socket;
 	};
+};
+
+struct spawn_item {
+	enum entity_type type;
+	u32 param;
+	f32 time;
 };
 
 struct game_state {
@@ -298,8 +360,15 @@ struct game_state {
 	u32 entity_count;
 
 	u32 entity_index_by_z[MAX_ENTITY_COUNT];
-	
+
+	struct spawn_item spawn_bag[32];
+	u32 spawn_bag_count;
+	u32 spawn_bag_offset;
+
+	u32 frame_index;
 	f32 time;
+
+	f32 last_frame_real_time;
 
 	f32 last_level_end_t;
 	f32 tunnel_begin_t;
@@ -315,17 +384,28 @@ struct game_state {
 	u32 note;
 
 	u32 counter_1;
+
+	f32 next_spawn_t;
+
+	u32 time_speed_up;
+	b32 skip_to_level;
 	
-	struct waveform sine_waves[MAX_ENTITY_COUNT];
+	struct waveform sine_waves[MAX_ENTITY_COUNT * MAX_ENTITY_PART_COUNT];
 	u32 sine_wave_count;
 
-	struct waveform saw_waves[MAX_ENTITY_COUNT];
+	struct waveform saw_waves[MAX_ENTITY_COUNT * MAX_ENTITY_PART_COUNT];
 	u32 saw_wave_count;
 
+	struct waveform noise_waves[MAX_ENTITY_COUNT * MAX_ENTITY_PART_COUNT];
+	u32 noise_wave_count;
+
+	
 	struct game_event events[64];
 	u32 event_count;
 
 	u32 entity_id_seq;
+
+	u32 score;
 };
 
 struct input_state
@@ -336,12 +416,18 @@ struct input_state
 	u8 down;
 
 	u8 a;
+
+	u8 speed_up;
+	u8 speed_down;
     
 	s8 dleft;
 	s8 dright;
 	s8 dup;
 	s8 ddown;
 	s8 da;
+
+	s8 dspeed_up;
+	s8 dspeed_down;
 };
 
 enum text_align
@@ -358,6 +444,13 @@ random_int(s32 min, s32 max)
 {
 	s32 range = max - min;
 	return min + rand() % range;
+}
+
+static f32
+random_f32()
+{
+	u32 r = (u32)(rand());
+	return (f32)r / (f32)RAND_MAX;
 }
 
 static s32
@@ -731,24 +824,28 @@ special_fill_cell_(SDL_Renderer *renderer,
 
 
 
-static void
-goto_level(struct game_state *game, u32 level)
-{
-	game->current_level = level;
-	game->last_level_end_t = game->level_end_t;
 
-	game->tunnel_begin_t = game->level_end_t + 5;
-	game->level_begin_t = game->tunnel_begin_t + 10;
-	game->level_end_t = game->level_begin_t + 60;
-		
-	game->tunnel_size = 0;
+static void
+end_level(struct game_state *game)
+{
+	game->level_end_t = game->time;
+	
+	for (u32 i = 0; i < game->entity_count; ++i) {
+		struct entity *entity = game->entities + i;
+		if (entity->expiration_t > 0)
+			entity->expiration_t = game->level_end_t;
+	}
+	
+	
 }
 
 static struct game_event *
 push_game_event(struct game_state *game)
 {
 	assert(game->event_count < ARRAY_COUNT(game->events));
-	return game->events + (game->event_count++);
+	struct game_event *result = game->events + (game->event_count++);
+	ZERO_STRUCT(*result);
+	return result;
 }
 
 static bool
@@ -766,9 +863,9 @@ seed_touch_water(struct game_state *game, struct entity *seed, struct entity *wa
 	
 	seed->suspended_for_frame = true;
 	droplet->suspended_for_frame = true;
-	e->seed_touch_water.seed_entity_index = seed->index;
-	e->seed_touch_water.water_entity_index = water->index;
-	e->seed_touch_water.water_part_index = droplet->index;
+	e->seed_touch_water.e1 = seed->index;
+	e->seed_touch_water.e2 = water->index;
+	e->seed_touch_water.p2 = droplet->index;
 
 	return e;
 }
@@ -779,9 +876,9 @@ try_seed_touch_water(struct game_state *game, struct entity *e1, struct entity_p
 	if (!check_suspension(e1, p1, e2, p2))
 		return false;
 	
-	if (e1->type == ENTITY_SEED && e2->type == ENTITY_WATER)
+	if ((e1->type & ENTITY_SEED) && (e2->type & ENTITY_WATER))
 		return seed_touch_water(game, e1, e2, p2);
-	else if (e1->type == ENTITY_WATER && e2->type == ENTITY_SEED)
+	else if ((e1->type & ENTITY_WATER) && (e2->type & ENTITY_SEED))
 		return seed_touch_water(game, e2, e1, p1);
 	else
 		return false;
@@ -789,14 +886,17 @@ try_seed_touch_water(struct game_state *game, struct entity *e1, struct entity_p
 
 
 static struct game_event *
-worm_eat_food(struct game_state *game, struct entity *worm, struct entity *food)
+worm_eat_food(struct game_state *game, struct entity *worm, struct entity *food, struct entity_part *part)
 {
 	struct game_event *e = push_game_event(game);
 	e->type = GAME_EVENT_WORM_EAT_FOOD;
 
 	food->suspended_for_frame = true;
-	e->worm_eat_food.worm_entity_index = worm->index;
-	e->worm_eat_food.food_entity_index = food->index;
+	part->suspended_for_frame = true;
+	
+	e->worm_eat_food.e1 = worm->index;
+	e->worm_eat_food.e2 = food->index;
+	e->worm_eat_food.p2 = part->index;
 	return e;
 }
 
@@ -806,12 +906,73 @@ try_worm_eat_food(struct game_state *game, struct entity *e1, struct entity_part
 	if (!check_suspension(e1, p1, e2, p2))
 		return false;
 	
-	if (e1->type == ENTITY_WORM && e2->type == ENTITY_FOOD && p1->index == 0)
-		return worm_eat_food(game, e1, e2);
-	else if (e1->type == ENTITY_FOOD && e2->type == ENTITY_WORM && p2->index == 0)
-		return worm_eat_food(game, e2, e1);
+	if (e1->type == ENTITY_WORM && (e2->type & ENTITY_FOOD) > 0 && p1->index == 0)
+		return worm_eat_food(game, e1, e2, p2);
+	else if ((e1->type & ENTITY_FOOD) > 0 && e2->type == ENTITY_WORM && p2->index == 0)
+		return worm_eat_food(game, e2, e1, p1);
 	else
 		return false;
+}
+
+static struct game_event *
+water_eater_eat_water(struct game_state *game, struct entity *water_eater, struct entity *water, struct entity_part *droplet)
+{
+	struct game_event *e = push_game_event(game);
+	e->type = GAME_EVENT_WATER_EATER_EAT_WATER;
+	
+	water_eater->suspended_for_frame = true;
+	droplet->suspended_for_frame = true;
+
+	e->water_eater_eat_water.e1 = water_eater->index;
+	e->water_eater_eat_water.e2 = water->index;
+	e->water_eater_eat_water.p2 = droplet->index;
+	
+	return e;
+}
+
+static bool
+try_water_eater_eat_water(struct game_state *game, struct entity *e1, struct entity_part *p1, struct entity *e2, struct entity_part *p2)
+{
+	if (!check_suspension(e1, p1, e2, p2))
+		return false;
+
+	if (e1->type == ENTITY_WATER_EATER && (e2->type & ENTITY_FOOD) && p1->index == 0)
+		return water_eater_eat_water(game, e1, e2, p2);
+	else if ((e1->type & ENTITY_FOOD) && e2->type == ENTITY_WATER_EATER && p2->index == 0)
+		return water_eater_eat_water(game, e2, e1, p1);
+	else
+		return false;	
+}
+
+
+static struct game_event *
+gem_touch_socket(struct game_state *game, struct entity *gem, struct entity *socket, struct entity_part *socket_part) {
+	struct game_event *e = push_game_event(game);
+	e->type = GAME_EVENT_GEM_TOUCH_SOCKET;
+
+	gem->suspended_for_frame = true;
+	socket->suspended_for_frame = true;
+
+	e->gem_touch_socket.e1 = gem->index;
+	e->gem_touch_socket.e2 = socket->index;
+	e->gem_touch_socket.p2 = socket_part->index;
+
+	return e;
+}
+
+
+static bool
+try_gem_touch_socket(struct game_state *game, struct entity *e1, struct entity_part *p1, struct entity *e2, struct entity_part *p2)
+{
+	if (!check_suspension(e1, p1, e2, p2))
+		return false;
+
+	if ((e1->type & ENTITY_GEM) && (e2->type & ENTITY_SOCKET) && p1->index == 0)
+		return gem_touch_socket(game, e1, e2, p2);
+	else if ((e1->type & ENTITY_SOCKET) && (e2->type & ENTITY_GEM) && p2->index == 0)
+		return gem_touch_socket(game, e2, e1, p1);
+	else
+		return false;	
 }
 
 
@@ -824,11 +985,12 @@ push_entity(struct game_state *game)
 	ZERO_STRUCT(*result);
 	result->id = ++game->entity_id_seq;
 	result->index = index;
+	result->seed = (u32)(rand());
 	return result;
 }
 
 static struct entity_part *
-push_entity_part(struct entity *entity, u16 parent_index)
+push_entity_part_(struct entity *entity, u16 parent_index)
 {
 	assert(entity->part_count < ARRAY_COUNT(entity->parts));
 	u16 index = entity->part_count++;
@@ -844,21 +1006,27 @@ push_entity_part(struct entity *entity, u16 parent_index)
 	return result;
 }
 
+static struct entity_part *
+push_entity_part(struct entity *entity, u16 length, u16 size, u16 color, u16 parent_index)
+{
+	struct entity_part *p = push_entity_part_(entity, parent_index);
+	p->length = length;
+	p->size = size;
+	p->render_size = p->size;
+	p->mass = p->size * p->size;
+	p->color = color;	
+	return p;
+}
+
+
 static void
-add_squid_leg(struct entity *entity, u16 count)
+add_squid_leg(struct entity *entity, u16 parent_index, u16 color, u16 length, u16 spacing, u16 size, f32 stiffness)
 {
 	struct entity_part *p;
-	u16 parent_index = 0;
 
-	for (u16 i = 0; i < count; ++i) {
-		p = push_entity_part(entity, parent_index);
-		p->length = 20;
-		p->size = 25 - i;
-		p->render_size = p->size;
-		p->mass = p->size * p->size;
-		/* p->mass = 10000; */
-		p->color = 6;
-		/* p->p = v2(-40, 20); */
+	for (u16 i = 0; i < length; ++i) {
+		p = push_entity_part(entity, spacing, size - i, color, parent_index);
+		p->stiffness = stiffness;
 		parent_index = p->index;
 	}
 	
@@ -894,28 +1062,88 @@ add_squid_leg(struct entity *entity, u16 count)
 	/* p->parent_index = parent_index; */
 }
 
-static void
-init_seed(struct entity *entity)
+static struct entity *
+init_socket(struct entity *entity)
 {
-	entity->type = ENTITY_SEED;
-	entity->part_count = 1;
-	entity->parts[0].length = 0;
-	entity->parts[0].size = 25;
-	entity->parts[0].color = 2;
-	entity->parts[0].p = v2(300, 300);
+	entity->type = ENTITY_SOCKET;
+	struct entity_part *p;
+	p = push_entity_part(entity, 0, 40, 0, 0);
+
+	/* p = push_entity_part(entity, 0, 10, 80, 0); */
+	/* p->passthrough = true; */
+	/* p->render_size = 0; */
+	
+	/* entity->fixed = true; */
+	/* entity->passthrough = true; */
+	return entity;	
 }
 
-static void
+static struct entity *
+init_seed(struct entity *entity)
+{
+	entity->type = (ENTITY_FOOD | ENTITY_SEED);
+	struct entity_part *p;
+	p = push_entity_part(entity, 0, 25, 2, 0);
+	p->content_value = 8;
+	return entity;
+}
+
+static struct entity *
+init_liquid(struct entity *entity, enum entity_type type, u8 color)
+{
+	entity->type = type;
+
+	struct entity_part *p;
+	p = push_entity_part(entity, 0, 10, color, 0);
+	p->render_size = 20;
+	p->max_alpha = 0xa0;
+
+	for (u32 i = 0; i < 8; ++i) {
+		p = push_entity_part(entity, 20, 10, color, 0);
+		p->render_size = 20;
+		p->max_alpha = 0xa0;
+		p->p = add_v2(entity->parts[0].p, v2(20 * cosf((f32)i * 2 * 3.14f / 8), 20 * sinf((f32)i * 2 * 3.14f / 8)));
+		p->content_value = 0;
+	}
+
+	return entity;
+}
+
+
+static struct entity *
+init_water(struct entity *entity)
+{
+	return init_liquid(entity, (ENTITY_FOOD | ENTITY_WATER), 8);
+}
+
+static struct entity *
+init_slime(struct entity *entity)
+{
+	return init_liquid(entity, (ENTITY_FOOD | ENTITY_WATER), 4);
+}
+
+static struct entity *
 init_food(struct entity *entity)
 {
-	 /* ZERO_STRUCT(*entity); */
 	entity->type = ENTITY_FOOD;
 	entity->part_count = 0;
-	struct entity_part *p = push_entity_part(entity, 0);
-	p->length = 0;
-	p->size = 25;
-	p->color = 3;
+
+	struct entity_part *p;
+	p = push_entity_part(entity, 0, 25, 4, 0);
+	p->content_value = 16;
+
+	return entity;
 }
+
+static struct entity *
+init_gem(struct entity *entity, u8 color)
+{
+	entity->type = ENTITY_GEM;
+	struct entity_part *p;
+	p = push_entity_part(entity, 0, 25, color, 0);
+	return entity;
+}
+
 
 static void
 push_worm_tail(struct entity *entity)
@@ -926,48 +1154,60 @@ push_worm_tail(struct entity *entity)
 	u16 parent_index = entity->part_count ? (entity->part_count - 1) : 0;
 	
 	struct entity_part *p;
-	p = push_entity_part(entity, parent_index);
-	p->length = 25;
-	p->size = (u16)(40 - entity->part_count);
-	p->render_size = p->size;
-	p->mass = (f32)(p->size * p->size);
-	p->color = 4;
+	p = push_entity_part(entity, 25, (u16)(40 - entity->part_count), 2, parent_index);
 	p->p = entity->parts[p->index - 1].p;
-	/* p->parent_index = (u16)(p->index - 1); */
 }
 
-static void
+static struct entity *
 init_worm(struct entity *entity)
 {
 	entity->type = ENTITY_WORM;
 	entity->part_count = 0;
 
 	struct entity_part *p;
-	p = push_entity_part(entity, 0);
-	p->length = 0;
-	p->size = 40;
-	p->render_size = p->size;
-	p->mass = (f32)(p->size * p->size);
-	p->color = 4;
+	p = push_entity_part(entity, 0, 40, 2, 0);
 
-	for (u32 i = 1; i < 8; ++i)
+	for (u32 i = 1; i < 2; ++i)
 		push_worm_tail(entity);
+
+	return entity;
 }
 
-static void
+static struct entity *
+init_water_eater(struct entity *entity)
+{
+	entity->type = ENTITY_WATER_EATER;
+	entity->part_count = 0;
+	entity->internal_collisions = true;
+
+	struct entity_part *p;
+	p = push_entity_part(entity, 0, 25, 5, 0);
+	p->mass = 50 * 50;
+
+	struct entity_part *l1;
+	struct entity_part *l2;
+	l1 = push_entity_part(entity, 25, 20, 2, 0);
+	l2 = push_entity_part(entity, 25, 20, 2, 0);
+	l1->internal_collisions = l2->internal_collisions = true;
+	l1->stiffness = 2;
+	l2->stiffness = 2;
+	l1->render_size = l2->render_size = 15;
+
+	add_squid_leg(entity, l1->index, 7, 4, 30, 20, 2);
+	add_squid_leg(entity, l2->index, 7, 4, 30, 20, 2);
+
+	return entity;
+}
+
+static struct entity *
 init_squid(struct entity *entity)
 {
 	struct entity_part *p;
 
 	entity->type = ENTITY_PLAYER;
 	
-	p = push_entity_part(entity, 0);
-	p->length = 0;
-	p->size = 50;
-	p->render_size = p->size;
+	p = push_entity_part(entity, 0, 50, 1, 0);
 	p->mass = 10000;
-	p->color = 1;
-	p->p = v2(100, 100);
 
 	/* p = add_part(entity); */
 	/* p->length = 120; */
@@ -975,7 +1215,7 @@ init_squid(struct entity *entity)
 	/* p->color = 2; */
 	/* p->p = v2(70, 70); */
 
-	add_squid_leg(entity, 16);
+	/* add_squid_leg(entity, 0, 6, 16, 20, 25, 0); */
 
 	/* entity->parts[6].length = 60; */
 	/* entity->parts[6].size = 25; */
@@ -996,6 +1236,8 @@ init_squid(struct entity *entity)
 	/* entity->parts[9].size = 20; */
 	/* entity->parts[9].color = 6; */
 	/* entity->parts[9].parent_index = 8; */
+
+	return entity;
 }
 
 static bool
@@ -1013,6 +1255,15 @@ find_entity_by_id(const struct game_state *game, u32 entity_id, u32 *index)
 	}
 	
 	return false;
+}
+
+static u32
+count_entity_of_type(const struct game_state *game, enum entity_type type)
+{
+	u32 result = 0;
+	for (u32 i = 0; i < game->entity_count; ++i)
+		result += (game->entities[i].type & type) > 0;
+	return result;
 }
 
 static u16
@@ -1046,6 +1297,65 @@ compute_relative_mass_of_entity_head(const struct entity *entity)
 	return entity->parts->mass / total_mass;
 }
 
+static void
+push_spawn_item(struct game_state *game, enum entity_type type, u32 param, f32 t)
+{
+	struct spawn_item *item = game->spawn_bag + (game->spawn_bag_count++);
+	item->type = type;
+	item->param = param;
+	item->time = game->spawn_bag_count == 1 ? t : (game->spawn_bag[game->spawn_bag_count - 1].time + t);
+}
+
+static void
+goto_level(struct game_state *game, u32 level)
+{
+	game->current_level = level;
+	game->last_level_end_t = game->level_end_t;
+
+	game->tunnel_begin_t = game->level_end_t + 5;
+	game->level_begin_t = game->tunnel_begin_t + 10;
+	game->level_end_t = game->level_begin_t + 120;
+
+	game->next_spawn_t = game->tunnel_begin_t;
+	
+	game->tunnel_size = 0;
+
+	game->counter_1 = 0;
+	
+	if (game->entity_count == 0) {
+		push_spawn_item(game, ENTITY_PLAYER, 0, 0);
+	}
+	
+	if (game->current_level == 0) {
+		push_spawn_item(game, ENTITY_SOCKET, 3, 0);
+		push_spawn_item(game, ENTITY_WORM, 0, 0);
+
+		push_spawn_item(game, ENTITY_SEED, 0, 10);
+		push_spawn_item(game, ENTITY_SEED, 0, 15);
+
+		push_spawn_item(game, ENTITY_WATER, 0, 30);
+
+		
+		push_spawn_item(game, ENTITY_SOCKET, 5, 30);
+
+		push_spawn_item(game, ENTITY_WATER, 0, 10);
+		push_spawn_item(game, ENTITY_SEED, 0, 10);
+		push_spawn_item(game, ENTITY_SEED, 0, 15);
+
+		push_spawn_item(game, ENTITY_WATER, 0, 30);
+		push_spawn_item(game, ENTITY_SEED, 0, 10);
+		push_spawn_item(game, ENTITY_SEED, 0, 15);
+
+		
+		/* init_squid(push_entity(game)); */
+		/* init_worm(push_entity(game)); */
+		/* init_socket(push_entity(game)); */
+		/* init_socket(push_entity(game)); */
+	}
+	
+	
+}
+
 
 static void
 begin_game_frame(struct game_state *game)
@@ -1058,6 +1368,9 @@ begin_game_frame(struct game_state *game)
 	while (entity_index < game->entity_count) {
 		struct entity *entity = game->entities + entity_index;
 		entity->suspended_for_frame = false;
+
+		if (entity->part_count == 0)
+			entity->disposed = true;
 			
 		if (entity->disposed) {
 			game->entities[entity_index] = game->entities[--game->entity_count];
@@ -1141,6 +1454,53 @@ apply_user_input(struct game_state *game, const struct input_state *input)
 	}
 }
 
+static bool
+spawn_next(struct game_state *game)
+{
+	u32 c = game->spawn_bag_count - game->spawn_bag_offset;
+	if (!c)
+		return false;
+
+	struct spawn_item item = game->spawn_bag[game->spawn_bag_offset];
+	if (game->time > (item.time + game->tunnel_begin_t)) {
+		struct entity *entity = 0;
+		switch (item.type) {
+		case ENTITY_PLAYER:
+			entity = init_squid(push_entity(game));
+			break;
+
+		case ENTITY_WORM:
+			entity = init_worm(push_entity(game));
+			break;
+
+		case ENTITY_SOCKET:
+			entity = init_socket(push_entity(game));
+			entity->expiration_t = game->level_end_t;
+			entity->parts->accept = (u8)item.param;
+			break;
+							
+		case ENTITY_SEED:
+			entity = init_seed(push_entity(game));
+			entity->expiration_t = game->level_end_t;
+			break;
+
+		case ENTITY_WATER:
+			entity = init_water(push_entity(game));
+			entity->expiration_t = game->level_end_t;
+			break;
+							
+		case ENTITY_WATER_EATER:
+			entity = init_water_eater(push_entity(game));
+			entity->expiration_t = game->level_end_t;
+			break;
+		}
+						
+		game->spawn_bag_offset++;
+	}
+
+	return true;
+}
+
 static void
 run_level_scenario_control(struct game_state *game)
 {
@@ -1152,16 +1512,65 @@ run_level_scenario_control(struct game_state *game)
 	if (game->time > game->level_end_t)
 		goto_level(game, (game->current_level + 1) % (ARRAY_COUNT(BASE_COLORS) - 1));
 
-	if (game->time > game->tunnel_begin_t && game->current_level == 0 && game->entity_count == 0) {
-		init_squid(push_entity(global_game));
-	}
+	spawn_next(game);
+}
+
+static bool
+target_nearest_entity_of_type(struct game_state *game, struct entity *entity, enum entity_type type, f32 max_dist) {
+	bool result = false;
 	
-	if (game->time > game->level_begin_t) {
-		if (game->counter_1 == 0) {
-			game->counter_1++;
-			init_worm(push_entity(game));
+	struct entity_part *head = entity->parts;
+	
+	f32 min_dist = 100000000;
+	for (u32 i = 0; i < game->entity_count; ++i) {
+		struct entity *other = game->entities + i;
+		if (other->z < 1)
+			continue;
+
+		if (other->expiration_t > 0 && game->time > other->expiration_t)
+			continue;
+			
+		if (other->type & type) {
+			f32 dist = len_v2(sub_v2(head->p, other->parts->p));
+			if (dist > max_dist)
+				continue;
+			
+			if (dist < min_dist) {
+				min_dist = dist;
+				entity->target_entity_id = other->id;
+				entity->target_entity_index = i;
+				result = true;
+			}
 		}
 	}
+
+	return result;
+}
+
+static bool
+entity_should_check_target(struct game_state *game, struct entity *entity)
+{
+	struct entity_part *head = entity->parts;
+
+	bool check_target = game->time > entity->next_target_check_t;
+	if (!check_target && entity->has_target) {
+		f32 dist = len_v2(sub_v2(head->p, entity->target));
+		if (isnan(dist) || dist < 10)
+			check_target = true;
+	}
+
+	return check_target;
+}
+
+static void
+update_roaming_ai(struct entity *entity)
+{	
+	f32 r1 = (f32)(random_int(0, WINDOW_WIDTH / 2));
+	f32 r2 = (f32)(random_int(0, WINDOW_HEIGHT / 2));
+	
+	f32 a = (f32)random_f32() * 2 * 3.14f;
+	entity->target = add_v2(screen_center, v2(r1 * cosf(a), r2 * sinf(a)));
+	entity->has_target = true;
 }
 
 static void
@@ -1169,25 +1578,31 @@ update_worm_ai(struct game_state *game, struct entity *entity)
 {
 	if (entity->z < 1)
 		return;
-	
-	struct entity_part *head = entity->parts;
-	
-	if (game->time > entity->next_target_check_t) {
-		f32 min_dist = 100000000;
-		for (u32 i = 0; i < game->entity_count; ++i) {
-			struct entity *other = game->entities + i;
-			if (other->type == ENTITY_FOOD) {
-				f32 dist = len_v2(sub_v2(head->p, other->parts->p));
-				if (dist < min_dist) {
-					min_dist = dist;
-					entity->target_entity_id = other->id;
-					entity->target_entity_index = i;
-				}
-			}
-		}
 
-		entity->next_target_check_t += 2;
-	}
+	if (!entity_should_check_target(game, entity))
+		return;
+	
+	if (!target_nearest_entity_of_type(game, entity, ENTITY_FOOD, 200))
+		update_roaming_ai(entity);
+
+	entity->pull_of_target = 1.0f;
+	entity->next_target_check_t = game->time + 2;
+}
+
+static void
+update_water_eater_ai(struct game_state *game, struct entity *entity)
+{
+	if (entity->z < 1)
+		return;
+
+	if (!entity_should_check_target(game, entity))
+		return;
+	
+	if (!target_nearest_entity_of_type(game, entity, ENTITY_FOOD, 600))
+		update_roaming_ai(entity);
+
+	entity->pull_of_target = 1.0f;
+	entity->next_target_check_t = game->time + 2;
 }
 
 static void
@@ -1198,14 +1613,29 @@ update_entity_ai(struct game_state *game)
 		struct entity_part *head = entity->parts;
 		assert(!entity->disposed);
 		assert(!entity->suspended_for_frame);
-		assert(entity->index == (u16)entity_index);
-
+		assert(entity->index == (u16)entity_index);					
+		
 		/* TODO(omid): Remove this? */
 		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
 			struct entity_part *part = entity->parts + part_index;
 			assert(!part->disposed);
 			assert(!part->suspended_for_frame);
-			assert(part->index == (u16)part_index);			
+			assert(part->index == (u16)part_index);
+
+			if (entity->expiration_t > 0 && game->time > entity->expiration_t)
+				part->color = 0;
+
+		}
+
+		if (entity->z < 0)
+			entity->disposed = true;
+
+		bool reverse_z = entity->expiration_t > 0 && game->time > entity->expiration_t;
+		const f32 z_speed = 0.001f;
+		
+		while (reverse_z && entity->z > 1) {
+			entity->accum_z -= entity->z;
+			entity->z -= z_speed;
 		}
 
 		if (entity->z < 1 && entity->accum_z > 0) {
@@ -1213,26 +1643,46 @@ update_entity_ai(struct game_state *game)
 			f32 r1 = zsqrd * WINDOW_WIDTH / 2.0f;
 			f32 r2 = zsqrd * WINDOW_HEIGHT / 2.0f;
 
-			entity->target = add_v2(screen_center, v2(r1 * cosf(2048 * 3.14f * entity->z / entity->accum_z), r2 * sinf(2048 * 3.14f * entity->z / entity->accum_z)));
+			f32 phi = fmodf((f32)entity->seed, 2 * 3.14f);
+			
+			entity->target = add_v2(screen_center, v2(r1 * cosf(2048 * 3.14f * entity->z / entity->accum_z + phi), r2 * sinf(2048 * 3.14f * entity->z / entity->accum_z + phi)));
 			entity->pull_of_target = 1 / compute_relative_mass_of_entity_head(entity);
 			entity->has_target = true;
-			entity->z += 0.001f;
+			entity->z += reverse_z ? -z_speed : z_speed;
 			if (entity->z > 1)
 				entity->has_target = false;
-		} else {
-			entity->z += 0.001f;
+		} else if (entity->z < 2) {
+			entity->z += reverse_z ? -z_speed : z_speed;
 		}
-		entity->accum_z += entity->z;
+		
+		if (entity->z < 2)
+			entity->accum_z += reverse_z ? -entity->z : entity->z;
 
+		if (entity->z < 0)
+			entity->z = 0;
+		if (entity->accum_z < 0)
+			entity->accum_z = 0;
+		
 
-		if (entity->type == ENTITY_WORM)
+		switch (entity->type) {
+		case ENTITY_WORM:
 			update_worm_ai(game, entity);
+			break;
 
+		case ENTITY_WATER_EATER:
+			update_water_eater_ai(game, entity);
+			break;
+		}
+		
 		if (entity->target_entity_id && find_entity_by_id(game, entity->target_entity_id, &entity->target_entity_index)) {
 			struct entity *target = game->entities + entity->target_entity_index;
-			entity->target = target->parts[0].p;
-			entity->pull_of_target = 1.0f;
-			entity->has_target = true;
+			if (target->disposed || (target->expiration_t > 0 && game->time > target->expiration_t)) {
+				entity->has_target = false;
+				entity->target_entity_id = 0;
+			} else {
+				entity->target = target->parts[0].p;
+				entity->has_target = true;
+			}
 		} else if (entity->target_entity_id) {
 			entity->has_target = false;
 			entity->target_entity_id = 0;
@@ -1259,7 +1709,7 @@ update_spring_physics(struct game_state *game)
 				struct v2 ideal = add_v2(parent->p, scale_v2(normalize_v2(offset), part->length));
 				struct v2 d = sub_v2(ideal, part->p);
 
-				const f32 K = 10.0f;
+				const f32 K = 10.0f + part->stiffness;
 				f32 force = len_v2(d) * K;
 
 				part->a = add_v2(part->a, scale_v2(d, force / part->mass));
@@ -1274,7 +1724,7 @@ static void
 check_for_collisions_against_entities(struct game_state *game, struct entity *entity, struct entity_part *part, struct v2 *new_p, struct v2 v)
 {
 	for (u32 other_index = 0; other_index < game->entity_count; ++other_index) {
-		if (other_index == entity->index && !entity->internal_collisions)
+		if (other_index == entity->index && (!entity->internal_collisions || !part->internal_collisions))
 			continue;
 
 		struct entity *other = game->entities + other_index;
@@ -1285,21 +1735,29 @@ check_for_collisions_against_entities(struct game_state *game, struct entity *en
 		for (u32 other_part_index = 0; other_part_index < other->part_count; ++other_part_index) {
 			if (other_index == entity->index && part->index == other_part_index)
 				continue;
-					
+
 			struct entity_part *other_part = other->parts + other_part_index;
+
+			if (other_index == entity->index && !other_part->internal_collisions)
+				continue;
+			
 			bool do_collision_response = false;
 
 			struct v2 tmp = v;
-			if (test_collision_against_box(other_part, part, part->p, new_p, &tmp)) {
-				do_collision_response = true;
+			struct v2 tmp_p = *new_p;
+			if (test_collision_against_box(other_part, part, part->p, &tmp_p, &tmp)) {
+				do_collision_response = !entity->passthrough && !other->passthrough && !part->passthrough && !other_part->passthrough;
 
 				if (!entity->suspended_for_frame && !part->suspended_for_frame && !other->suspended_for_frame && !other_part->suspended_for_frame) {
 					try_seed_touch_water(game, entity, part, other, other_part);
 					try_worm_eat_food(game, entity, part, other, other_part);
+					try_water_eater_eat_water(game, entity, part, other, other_part);
+					try_gem_touch_socket(game, entity, part, other, other_part);
 				}
 			}
 
 			if (do_collision_response) {
+				*new_p = tmp_p;
 				/* struct v2 d = normalize_v2(sub_v2(op->p, part->p)); */
 				struct v2 d = normalize_v2(v);
 				f32 v1 = dot_v2(v, d);
@@ -1314,7 +1772,7 @@ check_for_collisions_against_entities(struct game_state *game, struct entity *en
 				printf("Collision (%u,%u) <=> (%u,%u)\n", entity_index, part_index, other_index, other_part_index);
 				printf("\tV1: %f, V2: %f, M1: %f, M2: %f, DV: %f\n", (f64)v1, (f64)v2, (f64)part->mass, (f64)op->mass, (f64)dv);
 				printf("\tF1: %f, F2: %f\n", (f64)(f1), (f64)(f2));
-#endif						
+#endif
 				part->force = add_v2(part->force, scale_v2(d, f1));
 				other_part->force = add_v2(other_part->force, scale_v2(d, f2));
 			}
@@ -1371,9 +1829,11 @@ update_newtonian_physics(struct game_state *game)
 
 			if (len_v2(new_v) > 10)
 				new_v = scale_v2(normalize_v2(new_v), 10);
-			
-			part->p = new_p;
-			part->v = new_v;
+
+			if (!entity->fixed) {
+				part->p = new_p;
+				part->v = new_v;
+			}
 
 			force_entity_part_within_bounds(part);
 		}
@@ -1383,25 +1843,136 @@ update_newtonian_physics(struct game_state *game)
 static void
 process_triggered_events(struct game_state *game)
 {
-	for (u32 i = 0; i < game->event_count; ++i) {
-		struct game_event *e = game->events + i;
+	for (u32 event_index = 0; event_index < game->event_count; ++event_index) {
+		struct game_event *e = game->events + event_index;
 		switch (e->type) {
+		case GAME_EVENT_NONE:
+			break;
+			
 		case GAME_EVENT_SEED_TOUCH_WATER: {
-			struct entity *seed = game->entities + e->seed_touch_water.seed_entity_index;
-			struct entity *water = game->entities + e->seed_touch_water.water_entity_index;
-			struct entity_part *droplet = water->parts + e->seed_touch_water.water_part_index;
+			struct entity *seed = game->entities + e->seed_touch_water.e1;
+			struct entity *water = game->entities + e->seed_touch_water.e2;
+			struct entity_part *droplet = water->parts + e->seed_touch_water.p2;
 
 			droplet->disposed = true;
+			/* seed->disposed = true; */
+			/* struct entity *food = push_entity(game); */
 
+			struct v2 p = seed->parts->p;
 			init_food(seed);
+			seed->parts->p = p;
+
+			/* food->parts->p = seed->parts->p; */
+			/* food->parts->v = seed->parts->v; */
 		} break;
 
 		case GAME_EVENT_WORM_EAT_FOOD: {
-			struct entity *worm = game->entities + e->worm_eat_food.worm_entity_index;
-			struct entity *food = game->entities + e->worm_eat_food.food_entity_index;
-			food->disposed = true;
+			struct entity *worm = game->entities + e->worm_eat_food.e1;
+			struct entity *food = game->entities + e->worm_eat_food.e2;
+			struct entity_part *food_part = food->parts + e->worm_eat_food.p2;
 
-			push_worm_tail(worm);
+			food_part->disposed = true;
+
+			bool worm_full = true;
+			bool worm_hydrated = true;
+
+			for (u32 i = 0; i < worm->part_count; ++i) {
+				if (!worm->parts[i].content)
+					worm_full = false;
+				if (!worm->parts[i].hydration)
+					worm_hydrated = false;
+			}
+						
+			if (food_part->content_value) {
+				for (u32 i = 0; i < worm->part_count; ++i) {
+					if (!worm->parts[i].content) {
+						worm->parts[i].content = (u8)food_part->color;
+						worm->parts[i].content_value = food_part->content_value;
+						worm_full = i == (worm->part_count - 1);
+						break;
+					}
+				}
+			} else if (food->type & ENTITY_WATER) {
+				for (u32 i = 0; i < worm->part_count; ++i) {
+					if (!worm->parts[i].hydration) {
+						worm->parts[i].hydration = 1;
+						worm->parts[i].color = 4;
+						worm_hydrated = i == (worm->part_count - 1);
+						break;
+					}
+				}
+			}
+
+			if (worm_full && worm_hydrated) {
+#if 0
+				u32 score = 0;
+				u32 multiplier = 1;
+				for (u32 i = 0; i < worm->part_count; ++i) {
+					score += multiplier * worm->parts[i].content_value;
+					multiplier += worm->parts[i].content_value;
+					worm->parts[i].content = 0;
+					worm->parts[i].content_value = 0;
+					worm->parts[i].hydration = 0;
+					worm->parts[i].color = 2;
+				}
+				game->score += score;
+				/* push_worm_tail(worm); */
+#else
+				if (worm->part_count == 2) {
+					u8 poop = 0;
+					if (worm->parts[0].content == 2 &&
+					    worm->parts[1].content == 2) {
+						poop = 3;
+					} else if (worm->parts[0].content == 4 &&
+						   worm->parts[1].content == 4) {
+						poop = 5;
+					}
+
+					if (poop) {
+						struct entity *gem = init_gem(push_entity(game), poop);
+						gem->z = 1;
+						gem->accum_z = 1;
+
+						struct v2 d = sub_v2(worm->parts[worm->part_count - 1].p, worm->parts[worm->part_count - 2].p);
+						gem->parts->p = add_v2(worm->parts[worm->part_count - 1].p, d);
+						gem->parts->v = scale_v2(d, 100);
+					}
+				}
+
+				for (u32 i = 0; i < worm->part_count; ++i) {
+					worm->parts[i].content = 0;
+					worm->parts[i].content_value = 0;
+					worm->parts[i].hydration = 0;
+					worm->parts[i].color = 2;
+				}
+
+				
+#endif
+				
+				
+				
+				/* end_level(game); */
+			}
+			/* push_worm_tail(worm); */
+			
+		} break;
+
+		case GAME_EVENT_WATER_EATER_EAT_WATER: {
+			struct entity *water = game->entities + e->water_eater_eat_water.e2;
+			struct entity_part *droplet = water->parts + e->water_eater_eat_water.p2;
+
+			droplet->disposed = true;
+		} break;
+
+		case GAME_EVENT_GEM_TOUCH_SOCKET: {
+			struct entity *gem = game->entities + e->gem_touch_socket.e1;
+			struct entity *socket = game->entities + e->gem_touch_socket.e2;
+			struct entity_part *part = socket->parts + e->gem_touch_socket.p2;
+
+			if (!part->content && part->accept == gem->parts->color) {
+				gem->disposed = true;
+				part->content = gem->parts->color;
+			}
 			
 		} break;
 			
@@ -1423,6 +1994,7 @@ update_audio(struct game_state *game)
 	}
 	
 	SDL_LockAudioDevice(1);
+	game->noise_wave_count = 0;
 	u32 wave_index = 0;
 	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
 		struct entity *entity = game->entities + entity_index;
@@ -1433,18 +2005,31 @@ update_audio(struct game_state *game)
 			struct waveform *saw = game->saw_waves + wave_index;
 
 			f32 v = len_v2(part->v);
+			
 			f32 sqrt_v = sqrtf(v);
 			
 			sine->amp = sqrt_v / 400.0f;
+			if (entity->z < 1)
+				sine->amp *= entity->z;
+
 			if (sine->amp > 0.25f)
 				sine->amp = 0.25f;
 			sine->freq = (u16)((roundf(v * 10 / part->size)) * (f32)game->note);
 
 			saw->amp = sqrt_v / 400.0f; /* part->size / 1000.0f; */
+			if (entity->z < 1)
+				saw->amp *= entity->z;
+
 			if (saw->amp > 0.25f)
 				saw->amp = 0.25f;
 			
 			saw->freq = (u16)((roundf(v * 100 / part->mass)) * 4 * (f32)game->note); /* (u16)(roundf(len_v2(part->v)) * 40); */
+
+			if (part->audio_gen > 0) {
+				struct waveform *noise = game->noise_waves + (game->noise_wave_count++);
+				noise->amp = part->audio_gen;
+			}
+			
 		
 			++wave_index;
 		}
@@ -1499,7 +2084,7 @@ update_game(struct game_state *game,
 
 
 static void
-render_game(const struct game_state *game,
+render_game(struct game_state *game,
             SDL_Renderer *renderer,
             TTF_Font *font,
 	    TTF_Font *small_font)
@@ -1609,13 +2194,28 @@ render_game(const struct game_state *game,
 				z = 0;
 			
 			if (z > 1) {
-				for (u32 chain_index = 0; chain_index < chain_count; ++chain_index) {
+#if 0
+				for (u32 chain_index = 1; chain_index < chain_count; ++chain_index) {
 					f32 r = (f32)chain_index / (f32)chain_count;
 					struct v2 p = add_v2(parent_p, scale_v2(d, r));
 					fill_cell(renderer, 3, (s32)p.x, (s32)p.y, 12, 12);
 				}
+#endif
+
+				u8 alpha = part->max_alpha ? part->max_alpha : 0xFF;
 				
-				fill_cell(renderer, (u8)part->color, (s32)part_p.x, (s32)part_p.y, (s32)part->render_size, (s32)part->render_size);
+				fill_cell_(renderer, (u8)part->color, alpha, (s32)part_p.x, (s32)part_p.y, (s32)part->render_size, (s32)part->render_size);
+
+				if (part->content) {
+					fill_cell_(renderer, part->content, alpha, (s32)part_p.x, (s32)part_p.y, 10, 10);
+					draw_cell(renderer, 0, (s32)part_p.x, (s32)part_p.y, 10, 10);
+				}			
+
+				if (part->accept) {
+					fill_cell_(renderer, part->accept, 200, (s32)part_p.x, (s32)(part_p.y - part->render_size / 2.0f), (s32)part->render_size, 10);
+
+				}
+				
 			} else {
 				u8 max_alpha = (u8)(0xE0);
 				u8 alpha = (u8)(max_alpha * z);
@@ -1628,14 +2228,70 @@ render_game(const struct game_state *game,
 		}
 	}
 
+
+	u32 sockets[MAX_ENTITY_COUNT] = { 0 };
+	u32 socket_count = 0;
+	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
+		const struct entity *entity = game->entities + entity_index;
+		if (entity->type & ENTITY_SOCKET)
+			sockets[socket_count++] = entity_index;
+	}
+
+	for (u32 socket_index = 0; socket_index < socket_count; ++socket_index) {
+		 struct entity *e1 = game->entities + sockets[socket_index];
+		if (!e1->parts->content)
+			continue;
+
+		for (u32 other_socket_index = 0; other_socket_index < socket_count; ++other_socket_index) {
+			if (other_socket_index == socket_index)
+				continue;
+			
+			 struct entity *e2 = game->entities + sockets[other_socket_index];
+
+			if (!e2->parts->content)
+				continue;
+
+			struct v2 d = sub_v2(e2->parts->p, e1->parts->p);
+
+			u32 count = 0;
+			for (u32 i = 0; i < 8; ++i) {
+				f32 t = game->time * (i + 1) / 10.0f;
+				f32 r = fmodf(t, 1);
+				struct color c = color((u8)(0xFF * (1 - r)), (u8)((1-r) * 0xFF), 0xFF, 0x80);
+
+				while (r < 1) {
+					struct v2 p = add_v2(e1->parts->p, scale_v2(d, r));
+					struct v2 tangent = normalize_v2(v2(d.y, -d.x));
+					p = add_v2(p, scale_v2(tangent, sinf(r * 5 * 3.14f + t) * fmodf(t, 25)));
+					
+					fill_rect(renderer, (s32)p.x, (s32)p.y, 8, 8, c);
+					r += 0.01f + fmodf(t, 1) * 0.5f;
+
+					++count;
+				}
+			}
+
+			f32 power = (f32)count / 800;
+			e1->parts->audio_gen = power;
+			/* printf("%u\n", count); */
+			
+
+			/* e1->parts->audio_gen = (1-r) > 0.9f ? (1-r) : 0; */
+			
+		}
+	}
+	
+	
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
 	/* NOTE(omid): Render on-screen text. */
 	
 	/* draw_string(renderer, font, "LD48 - InvertedMinds", 5, 5, TEXT_ALIGN_LEFT, white); */
-	draw_string_f(renderer, small_font, 5, 5, TEXT_ALIGN_LEFT, white, "T: %f", (f64)game->time);
+	draw_string_f(renderer, small_font, 5, 5, TEXT_ALIGN_LEFT, white, "T: %f (%uX)", (f64)game->time, game->time_speed_up + 1);
 	draw_string_f(renderer, small_font, WINDOW_WIDTH, WINDOW_HEIGHT - SMALL_FONT_SIZE, TEXT_ALIGN_RIGHT, white, "A game by Omid Ghavami Zeitooni");
 
+	draw_string_f(renderer, font, WINDOW_WIDTH / 2, 0, TEXT_ALIGN_CENTER, white, "SCORE: %u", game->score);
+	
 	if (game->time < game->tunnel_begin_t) {
 		f32 fade_in_d = 1;
 		f32 fade_in_start_t = game->last_level_end_t;
@@ -1709,6 +2365,15 @@ mix_audio(void *unused, Uint8 *stream, int len)
 			mix += w;
 			wave->t += wave->freq;
 		}
+
+		for (u32 wave_index = 0; wave_index < game->noise_wave_count; ++wave_index) {
+			struct waveform *wave = game->noise_waves + wave_index;
+			f32 w = wave->amp * random_f32();
+			
+			mix += w;
+			wave->t += wave->freq;
+		}
+
 		
 		if (mix < -1.0f)
 			mix = -1.0f;
@@ -1739,36 +2404,74 @@ static void
 update_and_render()
 {
 	struct game_state *game = global_game;
-	
-	game->time = (f32)(SDL_GetTicks()) / 1000.0f;
-        
-	SDL_Event e;
-	while (SDL_PollEvent(&e) != 0)
-		if (e.type == SDL_QUIT)
+
+	for (u32 i = 0; i < (game->time_speed_up + 1); ++i) {
+		SDL_Event e;
+		while (SDL_PollEvent(&e) != 0)
+			if (e.type == SDL_QUIT)
+				quit = true;
+
+		s32 key_count;
+		const u8 *key_states = SDL_GetKeyboardState(&key_count);
+
+		if (key_states[SDL_SCANCODE_ESCAPE])
 			quit = true;
-
-	s32 key_count;
-	const u8 *key_states = SDL_GetKeyboardState(&key_count);
-
-	if (key_states[SDL_SCANCODE_ESCAPE])
-		quit = true;
         
-	struct input_state prev_input = input;
+		struct input_state prev_input = input;
         
-	input.left = key_states[SDL_SCANCODE_LEFT];
-	input.right = key_states[SDL_SCANCODE_RIGHT];
-	input.up = key_states[SDL_SCANCODE_UP];
-	input.down = key_states[SDL_SCANCODE_DOWN];
-	input.a = key_states[SDL_SCANCODE_SPACE];
+		input.left = key_states[SDL_SCANCODE_LEFT];
+		input.right = key_states[SDL_SCANCODE_RIGHT];
+		input.up = key_states[SDL_SCANCODE_UP];
+		input.down = key_states[SDL_SCANCODE_DOWN];
+		input.a = key_states[SDL_SCANCODE_SPACE];
 
-	input.dleft = (s8)(input.left - prev_input.left);
-	input.dright = (s8)(input.right - prev_input.right);
-	input.dup = (s8)(input.up - prev_input.up);
-	input.ddown = (s8)(input.down - prev_input.down);
-	input.da = (s8)(input.a - prev_input.a);
-        
-	update_game(game, &input);
-	render_game(game, renderer, font, small_font);
+		input.speed_up = key_states[SDL_SCANCODE_PAGEUP];
+		input.speed_down = key_states[SDL_SCANCODE_PAGEDOWN];
+
+		input.dleft = (s8)(input.left - prev_input.left);
+		input.dright = (s8)(input.right - prev_input.right);
+		input.dup = (s8)(input.up - prev_input.up);
+		input.ddown = (s8)(input.down - prev_input.down);
+		input.da = (s8)(input.a - prev_input.a);
+
+		input.dspeed_up = (s8)(input.speed_up - prev_input.speed_up);
+		input.dspeed_down = (s8)(input.speed_down - prev_input.speed_down);
+
+		if (input.dspeed_up > 0)
+			++game->time_speed_up;
+		else if (input.dspeed_down > 0 && game->time_speed_up)
+			--game->time_speed_up;
+
+		if (input.da > 0) {
+			game->skip_to_level = true;
+			game->time_speed_up = 31;
+		}
+
+		
+		game->time = (f32)game->frame_index * (1.0f / 60);
+
+		if (game->time > game->level_begin_t && game->skip_to_level) {
+			game->skip_to_level = false;
+			game->time_speed_up = 0;
+		}
+		
+		
+#if !defined(__EMSCRIPTEN__)
+		if (i == 0) {
+			f32 real_time = (f32)(SDL_GetTicks()) / 1000.0f;
+			f32 elapsed_since_last_frame = real_time - game->last_frame_real_time;
+			if (elapsed_since_last_frame < 16)
+				SDL_Delay((u32)(16 - elapsed_since_last_frame));
+			game->last_frame_real_time = real_time;
+		}
+#endif
+		
+		update_game(game, &input);
+		if (i == 0)
+			render_game(game, renderer, font, small_font);
+
+		++game->frame_index;
+	}
 }
 
 
@@ -1780,7 +2483,9 @@ main()
 
 	if (TTF_Init() < 0)
 		return 2;
-	
+
+	srand(120);
+
 	window_w = WINDOW_WIDTH;
 	window_h = WINDOW_HEIGHT;
 	
@@ -1790,7 +2495,7 @@ main()
 		SDL_WINDOWPOS_UNDEFINED,
 		window_w,
 		window_h,
-		SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
+		SDL_WINDOW_SHOWN);
 	
 	renderer = SDL_CreateRenderer(
 		window,
