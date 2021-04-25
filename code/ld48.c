@@ -28,14 +28,15 @@ typedef uintptr_t umm;
 typedef u16 b16;
 typedef u32 b32;
 
-
 #include "colors.h"
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
 #define AUDIO_FREQ 48000
 #define FONT_SIZE 24
-#define SMALL_FONT_SIZE 12
+#define SMALL_FONT_SIZE 16
+#define MAX_ENTITY_COUNT 32
+#define MAX_ENTITY_PART_COUNT 32
 
 #define ARRAY_COUNT(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -216,8 +217,9 @@ struct entity_part {
 	u16 color;
 	u16 parent_index;
 	u16 render_size;
+	u16 depth;
+	b16 disposed;
 	f32 mass;
-	b32 disposed;
 	b32 suspended_for_frame;
 	struct v2 p;
 	struct v2 v;
@@ -240,17 +242,19 @@ struct entity {
 	enum entity_type type;
 	u16 part_count;
 	b16 internal_collisions;	
-	struct entity_part parts[32];
+	struct entity_part parts[MAX_ENTITY_PART_COUNT];
 	b32 disposed;
 	b32 suspended_for_frame;
 
 	struct v2 target;
+	f32 pull_of_target;
 	u32 target_entity_index;
 	u32 target_entity_id;
 	b32 has_target;
 	f32 next_target_check_t;
 
 	f32 z;
+	f32 accum_z;
 };
 
 enum waveform_type {
@@ -290,8 +294,10 @@ struct game_event {
 };
 
 struct game_state {
-	struct entity entities[32];
+	struct entity entities[MAX_ENTITY_COUNT];
 	u32 entity_count;
+
+	u32 entity_index_by_z[MAX_ENTITY_COUNT];
 	
 	f32 time;
 
@@ -310,10 +316,10 @@ struct game_state {
 
 	u32 counter_1;
 	
-	struct waveform sine_waves[32];
+	struct waveform sine_waves[MAX_ENTITY_COUNT];
 	u32 sine_wave_count;
 
-	struct waveform saw_waves[32];
+	struct waveform saw_waves[MAX_ENTITY_COUNT];
 	u32 saw_wave_count;
 
 	struct game_event events[64];
@@ -367,6 +373,8 @@ max(s32 x, s32 y)
 }
 
 static const struct v2 screen_center = { .x = WINDOW_WIDTH / 2, .y = WINDOW_HEIGHT / 2 };
+static struct game_state *global_game;
+
 
 static inline bool
 find_intersection_between_lines_(f32 P0_X,
@@ -820,7 +828,7 @@ push_entity(struct game_state *game)
 }
 
 static struct entity_part *
-push_entity_part(struct entity *entity)
+push_entity_part(struct entity *entity, u16 parent_index)
 {
 	assert(entity->part_count < ARRAY_COUNT(entity->parts));
 	u16 index = entity->part_count++;
@@ -828,6 +836,11 @@ push_entity_part(struct entity *entity)
 	ZERO_STRUCT(*result);
 	result->index = index;
 	result->p = v2(WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2);
+	result->parent_index = parent_index;
+
+	if (parent_index != index)
+		result->depth = entity->parts[parent_index].depth + 1;
+	
 	return result;
 }
 
@@ -838,13 +851,14 @@ add_squid_leg(struct entity *entity, u16 count)
 	u16 parent_index = 0;
 
 	for (u16 i = 0; i < count; ++i) {
-		p = push_entity_part(entity);
+		p = push_entity_part(entity, parent_index);
 		p->length = 20;
 		p->size = 25 - i;
+		p->render_size = p->size;
+		p->mass = p->size * p->size;
 		/* p->mass = 10000; */
 		p->color = 6;
 		/* p->p = v2(-40, 20); */
-		p->parent_index = parent_index;
 		parent_index = p->index;
 	}
 	
@@ -897,7 +911,7 @@ init_food(struct entity *entity)
 	 /* ZERO_STRUCT(*entity); */
 	entity->type = ENTITY_FOOD;
 	entity->part_count = 0;
-	struct entity_part *p = push_entity_part(entity);
+	struct entity_part *p = push_entity_part(entity, 0);
 	p->length = 0;
 	p->size = 25;
 	p->color = 3;
@@ -908,16 +922,18 @@ push_worm_tail(struct entity *entity)
 {
 	if (entity->part_count >= ARRAY_COUNT(entity->parts))
 		return;
+
+	u16 parent_index = entity->part_count ? (entity->part_count - 1) : 0;
 	
 	struct entity_part *p;
-	p = push_entity_part(entity);
+	p = push_entity_part(entity, parent_index);
 	p->length = 25;
 	p->size = (u16)(40 - entity->part_count);
 	p->render_size = p->size;
 	p->mass = (f32)(p->size * p->size);
 	p->color = 4;
-	p->p = add_v2(entity->parts[p->index - 1].p, v2(25, 0));
-	p->parent_index = (u16)(p->index - 1);
+	p->p = entity->parts[p->index - 1].p;
+	/* p->parent_index = (u16)(p->index - 1); */
 }
 
 static void
@@ -927,14 +943,14 @@ init_worm(struct entity *entity)
 	entity->part_count = 0;
 
 	struct entity_part *p;
-	p = push_entity_part(entity);
+	p = push_entity_part(entity, 0);
 	p->length = 0;
 	p->size = 40;
 	p->render_size = p->size;
 	p->mass = (f32)(p->size * p->size);
 	p->color = 4;
 
-	for (u32 i = 1; i < 4; ++i)
+	for (u32 i = 1; i < 8; ++i)
 		push_worm_tail(entity);
 }
 
@@ -945,7 +961,7 @@ init_squid(struct entity *entity)
 
 	entity->type = ENTITY_PLAYER;
 	
-	p = push_entity_part(entity);
+	p = push_entity_part(entity, 0);
 	p->length = 0;
 	p->size = 50;
 	p->render_size = p->size;
@@ -998,6 +1014,38 @@ find_entity_by_id(const struct game_state *game, u32 entity_id, u32 *index)
 	
 	return false;
 }
+
+static u16
+compute_entity_part_depth(const struct entity *entity, const struct entity_part *part)
+{
+	u16 depth = 0;
+	const struct entity_part *p = part;
+	while (p->parent_index != p->index) {
+		depth++;
+
+		p = entity->parts + p->parent_index;
+	}
+
+	return depth;
+}
+
+static f32
+compute_entity_mass(const struct entity *entity)
+{
+	f32 mass = 0;
+	for (u32 i = 0; i < entity->part_count; ++i)
+		mass += entity->parts[i].mass;
+
+	return mass;
+}
+
+static f32
+compute_relative_mass_of_entity_head(const struct entity *entity)
+{
+	f32 total_mass = compute_entity_mass(entity);
+	return entity->parts->mass / total_mass;
+}
+
 
 static void
 begin_game_frame(struct game_state *game)
@@ -1057,12 +1105,18 @@ begin_game_frame(struct game_state *game)
 		}
 
 		++entity_index;
-	}	
+	}
+
+	for (u32 i = 0; i < game->entity_count; i++)
+		game->entity_index_by_z[i] = i;
 }
 
 static void
 apply_user_input(struct game_state *game, const struct input_state *input)
 {
+	if (game->entity_count == 0)
+		return;
+	
 	struct entity *player = &game->entities[0];
 	struct entity_part *root = player->parts;
 
@@ -1094,10 +1148,14 @@ run_level_scenario_control(struct game_state *game)
 		game->tunnel_size = WINDOW_WIDTH * (game->time - game->tunnel_begin_t) / (game->level_begin_t - game->tunnel_begin_t);
 	else
 		game->tunnel_size = WINDOW_WIDTH;
-	
+
 	if (game->time > game->level_end_t)
 		goto_level(game, (game->current_level + 1) % (ARRAY_COUNT(BASE_COLORS) - 1));
 
+	if (game->time > game->tunnel_begin_t && game->current_level == 0 && game->entity_count == 0) {
+		init_squid(push_entity(global_game));
+	}
+	
 	if (game->time > game->level_begin_t) {
 		if (game->counter_1 == 0) {
 			game->counter_1++;
@@ -1150,15 +1208,21 @@ update_entity_ai(struct game_state *game)
 			assert(part->index == (u16)part_index);			
 		}
 
-		if (entity->z < 1) {
-			f32 r = entity->z * len_v2(screen_center);
+		if (entity->z < 1 && entity->accum_z > 0) {
+			f32 zsqrd = entity->z * entity->z;
+			f32 r1 = zsqrd * WINDOW_WIDTH / 2.0f;
+			f32 r2 = zsqrd * WINDOW_HEIGHT / 2.0f;
 
-			entity->target = v2(r * cosf(entity->z), r * sinf(entity->z));
+			entity->target = add_v2(screen_center, v2(r1 * cosf(2048 * 3.14f * entity->z / entity->accum_z), r2 * sinf(2048 * 3.14f * entity->z / entity->accum_z)));
+			entity->pull_of_target = 1 / compute_relative_mass_of_entity_head(entity);
 			entity->has_target = true;
 			entity->z += 0.001f;
 			if (entity->z > 1)
 				entity->has_target = false;
-		} 
+		} else {
+			entity->z += 0.001f;
+		}
+		entity->accum_z += entity->z;
 
 
 		if (entity->type == ENTITY_WORM)
@@ -1167,15 +1231,16 @@ update_entity_ai(struct game_state *game)
 		if (entity->target_entity_id && find_entity_by_id(game, entity->target_entity_id, &entity->target_entity_index)) {
 			struct entity *target = game->entities + entity->target_entity_index;
 			entity->target = target->parts[0].p;
+			entity->pull_of_target = 1.0f;
 			entity->has_target = true;
-		} else {
+		} else if (entity->target_entity_id) {
 			entity->has_target = false;
 			entity->target_entity_id = 0;
 		}
 
 		if (entity->has_target) {
 			struct v2 d = normalize_v2(sub_v2(entity->target, head->p));
-			head->a = add_v2(head->a, d);					
+			head->a = add_v2(head->a, scale_v2(d, entity->pull_of_target));
 		}
 	}
 }
@@ -1213,6 +1278,9 @@ check_for_collisions_against_entities(struct game_state *game, struct entity *en
 			continue;
 
 		struct entity *other = game->entities + other_index;
+
+		if (other->z < 1)
+			continue;
 				
 		for (u32 other_part_index = 0; other_part_index < other->part_count; ++other_part_index) {
 			if (other_index == entity->index && part->index == other_part_index)
@@ -1386,6 +1454,19 @@ update_audio(struct game_state *game)
 	SDL_UnlockAudioDevice(1);
 }
 
+static s32
+sort_entity_indices_by_z(const void *x, const void *y)
+{
+	struct entity *entities = global_game->entities; /* thunk; */
+	u32 i1 = *(const u32 *)x;
+	u32 i2 = *(const u32 *)y;
+
+	if (entities[i1].z < entities[i2].z)
+		return -1;
+	return 1;
+}
+
+
 static void
 update_game(struct game_state *game,
             const struct input_state *input)
@@ -1412,7 +1493,10 @@ update_game(struct game_state *game,
 
 	/* NOTE(omid): Audio generation. */
 	update_audio(game);
+
+	qsort(game->entity_index_by_z, game->entity_count, sizeof(u32), sort_entity_indices_by_z);
 }
+
 
 static void
 render_game(const struct game_state *game,
@@ -1437,6 +1521,14 @@ render_game(const struct game_state *game,
 
 	/* NOTE(omid): Render tunnel. */
 	{
+		f32 fade_progress = 1.0f;
+		if (game->time < game->level_begin_t) {
+			f32 tunnel_d = game->level_begin_t - game->tunnel_begin_t;
+			fade_progress = (game->time - game->tunnel_begin_t) / tunnel_d;
+		}
+		
+		SDL_RenderSetScale(renderer, fade_progress, fade_progress);
+		
 		f32 initial_r = len_o * level_progress * level_progress;
 		f32 r = initial_r;
 		f32 a = 0.25f * game->time;
@@ -1445,17 +1537,23 @@ render_game(const struct game_state *game,
 
 			u8 max_alpha = (u8)(0xE0 * sqrtf(r / len_o));
 			u8 alpha = max_alpha;
-			if (game->time < game->level_begin_t) {
-				f32 tunnel_d = game->level_begin_t - game->tunnel_begin_t;
-				f32 fade_progress = (game->time - game->tunnel_begin_t) / tunnel_d;
+			if (game->time < game->level_begin_t)
 				alpha = (u8)(max_alpha * fade_progress);
-			}
-			
+
+			#if 0
 			special_fill_cell_(renderer, (u8)(game->current_level + 1), alpha, (s32)p.x, (s32)p.y, (s32)(r / 5.0f), (s32)(r / 5.0f));
+			#else
+			struct v2 sp = add_v2(p, scale_v2(screen_center, (1 - fade_progress) / fade_progress));
+			special_fill_cell_(renderer, (u8)(game->current_level + 1), alpha, (s32)sp.x, (s32)sp.y, (s32)(r / 5.0f), (s32)(r / 5.0f));
+			#endif
+
+			
 			/* r += 0.5f; */
 			r += 0.25f + sqrtf(r - initial_r) * 0.01f;
 			a += sqrtf(r - initial_r) * 0.1f;
 		}
+
+		SDL_RenderSetScale(renderer, 1, 1);
 	}
 
 	/* NOTE(omid): Render shadows. */
@@ -1487,46 +1585,46 @@ render_game(const struct game_state *game,
 			render_rect(renderer, c, (s32)shadow.x, (s32)shadow.y, (s32)(part->render_size * scale), (s32)(part->render_size * scale), false);
 		}
 	}
-	
 
 	/* NOTE(omid): Render entities. */
-	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
+	/* for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) { */
+	for (u32 sort_list_index = 0; sort_list_index < game->entity_count; ++sort_list_index) {
+		u32 entity_index = game->entity_index_by_z[sort_list_index];
 		const struct entity *entity = game->entities + entity_index;
+		
 		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
 			const struct entity_part *part = entity->parts + (entity->part_count - part_index - 1);
 			const struct entity_part *parent = entity->parts + part->parent_index;
 
-			struct v2 ep = parent->p;
-			struct v2 pp = part->p;
+			struct v2 parent_p = parent->p;
+			struct v2 part_p = part->p;
 
-			struct v2 d = sub_v2(pp, ep);
+			struct v2 d = sub_v2(part_p, parent_p);
         
 			u32 chain_count = (u32)(part->length / 20);
 
-			for (u32 chain_index = 0; chain_index < chain_count; ++chain_index) {
-				f32 r = (f32)chain_index / (f32)chain_count;
-				struct v2 p = add_v2(ep, scale_v2(d, r));
-				fill_cell(renderer, 3, (s32)p.x, (s32)p.y, 12, 12);
-			}
-				
-			fill_cell(renderer, (u8)part->color, (s32)pp.x, (s32)pp.y, (s32)part->render_size, (s32)part->render_size);
-
+			u16 depth = compute_entity_part_depth(entity, part);
+			f32 z = entity->z - depth * 0.02f;
+			if (z < 0)
+				z = 0;
 			
-			/* if (entity->z > 1) { */
-			/* } else { */
-			/* 	u8 max_alpha = (u8)(0xE0);  /\* * entity->z); *\/ */
-			/* 	u8 alpha = max_alpha; */
-			/* 	if (game->time < game->level_begin_t) { */
-			/* 		f32 fade_progress = entity->z; */
-			/* 		alpha = (u8)(max_alpha * fade_progress); */
-			/* 	} */
+			if (z > 1) {
+				for (u32 chain_index = 0; chain_index < chain_count; ++chain_index) {
+					f32 r = (f32)chain_index / (f32)chain_count;
+					struct v2 p = add_v2(parent_p, scale_v2(d, r));
+					fill_cell(renderer, 3, (s32)p.x, (s32)p.y, 12, 12);
+				}
+				
+				fill_cell(renderer, (u8)part->color, (s32)part_p.x, (s32)part_p.y, (s32)part->render_size, (s32)part->render_size);
+			} else {
+				u8 max_alpha = (u8)(0xE0);
+				u8 alpha = (u8)(max_alpha * z);
 
-			/* 	f32 r = entity->z * len_o / 2; */
-			/* 	f32 a = 2.f * 3.14f * entity->z; */
-			/* 	struct v2 rp = add_v2(add_v2(o, v2(r * cosf(a), r * sinf(a))), d); */
-
-			/* 	special_fill_cell_(renderer, (u8)(part->color), alpha, (s32)rp.x, (s32)rp.y, (s32)(part->render_size * entity->z), (s32)(part->render_size * entity->z)); */
-			/* } */
+				SDL_RenderSetScale(renderer, z, z);
+				s32 size = (s32)(part->render_size);
+				special_fill_cell_(renderer, (u8)(part->color), alpha, (s32)(part_p.x / z), (s32)(part_p.y / z), size, size);
+				SDL_RenderSetScale(renderer, 1, 1);
+			}
 		}
 	}
 
@@ -1565,13 +1663,17 @@ render_game(const struct game_state *game,
 	}
 
 
-#if 1
+#if 0
 	s32 y = 5 + SMALL_FONT_SIZE;
+	
 	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
 		const struct entity *entity = game->entities + entity_index;
+		draw_string_f(renderer, small_font, 5, y, TEXT_ALIGN_LEFT, white, "E (%u): HAS TARGET? %s [(%f, %f) * %f]", entity_index, entity->has_target ? "YES" : "NO", (f64)entity->target.x, (f64)entity->target.y, (f64)entity->pull_of_target);
+		y += SMALL_FONT_SIZE;
+		
 		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
 			const struct entity_part *part = entity->parts + (entity->part_count - part_index - 1);
-			draw_string_f(renderer, small_font, 5, y, TEXT_ALIGN_LEFT, white, "E (%u, %u): (%f, %f)", entity_index, part_index, (f64)part->p.x, (f64)part->p.y);
+			draw_string_f(renderer, small_font, 25, y, TEXT_ALIGN_LEFT, white, "E (%u, %u): (%f, %f)", entity_index, part_index, (f64)part->p.x, (f64)part->p.y);
 			y += SMALL_FONT_SIZE;
 		}
 	}
@@ -1625,7 +1727,7 @@ static const char *font_name;
 static TTF_Font *font;
 static TTF_Font *small_font;
 
-static struct game_state *game;
+
 static struct input_state input;
 static bool quit;
 
@@ -1636,6 +1738,8 @@ static f32 default_scale = 1;
 static void
 update_and_render()
 {
+	struct game_state *game = global_game;
+	
 	game->time = (f32)(SDL_GetTicks()) / 1000.0f;
         
 	SDL_Event e;
@@ -1704,12 +1808,12 @@ main()
 	font = TTF_OpenFont(font_name, FONT_SIZE);
 	small_font = TTF_OpenFont(font_name, SMALL_FONT_SIZE);
 
-	game = (struct game_state *)malloc(sizeof(struct game_state));
-	ZERO_STRUCT(*game);
+	global_game = (struct game_state *)malloc(sizeof(struct game_state));
+	ZERO_STRUCT(*global_game);
 	/* game->level_end_t = -5; */
-	goto_level(game, 0);
+	goto_level(global_game, 0);
 
-	init_squid(push_entity(game));
+	
 
 	/* { */
 	/* 	struct entity *entity = game->entities + (game->entity_count++); */
@@ -1774,8 +1878,8 @@ main()
 	/* 	} */
 	/* } */
 	
-	for (u32 entity_index = 0; entity_index < game->entity_count; ++entity_index) {
-		struct entity *entity = game->entities + entity_index;
+	for (u32 entity_index = 0; entity_index < global_game->entity_count; ++entity_index) {
+		struct entity *entity = global_game->entities + entity_index;
 		for (u32 part_index = 0; part_index < entity->part_count; ++part_index) {
 			struct entity_part *part = entity->parts + part_index;
 			assert(part->index == (u16)part_index);
@@ -1795,7 +1899,7 @@ main()
 	fmt.channels = 1;
 	fmt.samples = 1024;
 	fmt.callback = mix_audio;
-	fmt.userdata = game;
+	fmt.userdata = global_game;
 
 	SDL_AudioSpec obt;
 	
