@@ -396,6 +396,9 @@ struct game_state {
 	u32 score;
 
 	b32 game_over;
+
+	b32 pad_;
+	const char *level_instr;
 };
 
 struct input_state
@@ -1287,6 +1290,8 @@ goto_level(struct game_state *game, u32 level)
 		
 		push_spawn_item(game, ENTITY_SEED, 0, 5);
 		push_spawn_item(game, ENTITY_SEED, 0, 2);
+
+		game->level_instr = "FEED THE WORM";
 	} else if (level == 1) {
 		push_spawn_item(game, ENTITY_PLAYER, 0, 0);
 		
@@ -1298,6 +1303,9 @@ goto_level(struct game_state *game, u32 level)
 		push_spawn_item(game, ENTITY_WATER, 4, 5);
 
 		push_spawn_item(game, ENTITY_WORM, 0, 10);
+
+
+		game->level_instr = "WATER THE SEEDS";
 	} else if (level == 2) {
 		level_length = 75;
 
@@ -1320,6 +1328,8 @@ goto_level(struct game_state *game, u32 level)
 		push_spawn_item(game, ENTITY_WATER, 2, 10);
 		push_spawn_item(game, ENTITY_SEED, 0, 0);
 		push_spawn_item(game, ENTITY_SEED, 0, 1);
+
+		game->level_instr = "HERD THE WORM";
 	} else if (level == 3) {
 		level_length = 90;
 
@@ -1343,6 +1353,8 @@ goto_level(struct game_state *game, u32 level)
 		push_spawn_item(game, ENTITY_WATER, 8, 5);
 		push_spawn_item(game, ENTITY_SEED, 0, 0);
 		push_spawn_item(game, ENTITY_SEED, 0, 1);
+
+		game->level_instr = "HERD THE WORM, AGAIN";
 	} else if (level == 4) {
 		level_length = 30;
 
@@ -1357,8 +1369,11 @@ goto_level(struct game_state *game, u32 level)
 		push_spawn_item(game, ENTITY_WATER_EATER, 0, 5);
 		
 		push_spawn_item(game, ENTITY_WATER, 8, 5);
+
+		game->level_instr = "YOU ARE THE SHEPHERD";
 	} else {
 		game->game_over = true;
+		game->level_instr = 0;
 	}
 
 	game->current_level = level;
@@ -2401,6 +2416,10 @@ render_game(struct game_state *game,
 				draw_string_f(renderer, font, WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 9, TEXT_ALIGN_CENTER, c, "CONGRATULATIONS, YOU WON!", game->current_level + 1);
 			} else {
 				draw_string_f(renderer, font, WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 9, TEXT_ALIGN_CENTER, c, "LEVEL %u", game->current_level + 1);
+
+				if (game->level_instr) {
+					draw_string_f(renderer, small_font, WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 -9 + FONT_SIZE, TEXT_ALIGN_CENTER, c, "%s", game->level_instr);
+				}
 
 				draw_string_f(renderer, font, WINDOW_WIDTH / 2, WINDOW_HEIGHT - FONT_SIZE, TEXT_ALIGN_CENTER, c, "PRESS 'SPACE' TO SKIP");
 			}
