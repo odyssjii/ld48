@@ -1509,7 +1509,7 @@ check_win_condition(struct game_state *game)
 			socket_count++;
 	
 	for (u32 i = 0; i < game->entity_count; ++i)
-		if ((game->entities[i].type & ENTITY_SOCKET) && game->entities[i].parts->content)
+		if ((game->entities[i].type & ENTITY_SOCKET) && game->entities[i].parts->content && game->entities[i].z >= 1)
 			--socket_count;
 
 	return socket_count == 0;
